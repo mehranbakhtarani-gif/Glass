@@ -4503,9 +4503,9 @@
       const p = state.products.find(x => x.id === document.getElementById('tr-prod').value);
       const destWh = document.getElementById('tr-dest-wh').value;
       const qty = Number(document.getElementById('tr-qty').value);
-      const sourceWh = p?.warehouseId;
+      const sourceWh = resolveProductWarehouseId(p);
       const sourceStock = Number(p?.stock);
-      if (!p || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(sourceStock) || qty > sourceStock) {
+      if (!p || !sourceWh || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(sourceStock) || qty > sourceStock) {
         showToast('مقدار انتقال یا موجودی مبدأ معتبر نیست.', 'error'); return;
       }
       if (!destWh || !state.warehouses.some(w => w.id === destWh)) {
@@ -4619,8 +4619,8 @@
         const real = Number(document.getElementById(`st-real-${p.id}`).value);
         if (real !== p.stock) {
           const diff = real - p.stock;
-          if (diff > 0 && state.costingMethod === 'FIFO') addStockBatch(p, { lot: 'ADJ-' + Date.now() + '-' + p.id, quantity: diff, unitCost: p.buyPrice, receivedDate: getTodayJalaliDate(), sourceType: 'stocktake', sourceRef: p.id });
-          if (diff < 0 && state.costingMethod === 'FIFO') consumeFifoStock(p, Math.abs(diff), p.warehouseId);
+          if (diff > 0 && state.costingMethod === 'FIFO') addStockBatch(p, { lot: 'ADJ-' + Date.now() + '-' + p.id, quantity: diff, unitCost: p.buyPrice, receivedDate: getTodayJalaliDate(), sourceType: 'stocktake', sourceRef: p.id, warehouseId: resolveProductWarehouseId(p) });
+          if (diff < 0 && state.costingMethod === 'FIFO') consumeFifoStock(p, Math.abs(diff), resolveProductWarehouseId(p));
           p.stock = real;
           changes++;
           const val = Math.abs(diff) * p.buyPrice;

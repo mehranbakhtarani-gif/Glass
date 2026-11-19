@@ -554,14 +554,14 @@
     /* Glass Flow — floating workflow hub. Presentation/navigation only; domain data is untouched. */
     #glass-flow-dock { position:relative; left:auto; right:auto; bottom:auto; z-index:66; direction:rtl; flex:0 0 auto; }
     #glass-flow-launcher {
-      display:flex; align-items:center; gap:9px; min-height:50px; padding:0 16px;
+      display:flex; align-items:center; gap:7px; min-height:40px; padding:0 11px;
       border:1px solid rgba(255,255,255,.82); border-radius:18px; color:#f0fdfa;
       background:linear-gradient(135deg,rgba(4,65,70,.96),rgba(8,135,132,.94));
       box-shadow:0 12px 34px rgba(3,67,74,.25),inset 0 1px 0 rgba(255,255,255,.22);
       -webkit-backdrop-filter:blur(22px) saturate(155%); backdrop-filter:blur(22px) saturate(155%);
-      font-size:12px; font-weight:900; cursor:pointer; touch-action:manipulation;
+      font-size:11px; font-weight:850; cursor:pointer; touch-action:manipulation;
     }
-    #glass-flow-launcher .flow-orbit { width:25px;height:25px;display:grid;place-items:center;border-radius:9px;background:rgba(255,255,255,.16);font-size:15px; }
+    #glass-flow-launcher .flow-orbit { width:21px;height:21px;display:grid;place-items:center;border-radius:7px;background:rgba(255,255,255,.16);font-size:13px; }
     #glass-flow-panel {
       position:absolute; right:0; left:auto; top:calc(100% + 8px); bottom:auto; width:min(370px,calc(100vw - 28px)); max-height:min(72dvh,680px);
       display:none; flex-direction:column; overflow:hidden; border:1px solid rgba(255,255,255,.88);
@@ -672,7 +672,7 @@
         </div>
       </section>
       <button type="button" id="glass-flow-launcher" aria-expanded="false" aria-controls="glass-flow-panel">
-        <span class="flow-orbit">✣</span><span>Flow شناور</span><span aria-hidden="true">⌃</span>
+        <span class="flow-orbit">✣</span><span>دسترسی‌های سریع</span><span aria-hidden="true">⌃</span>
       </button>
     </div>
         <!-- Supabase Live Sync Pill & Quick Actions -->

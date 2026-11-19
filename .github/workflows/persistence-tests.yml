@@ -28,6 +28,8 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Run real-browser persistence test
         run: node --test tests/indexeddb-browser.test.cjs
+      - name: Run three-device client sync test
+        run: node --test tests/three-device-client-sync.test.cjs
 
   postgres-concurrent-device-sync:
     runs-on: ubuntu-latest

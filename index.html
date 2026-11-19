@@ -2232,6 +2232,10 @@
       const u = document.getElementById('sb-url-input').value.trim().replace(/\/$/, '');
       const k = document.getElementById('sb-key-input').value.trim();
       if (!u || !k) { showToast('لطفاً URL و Key سوپابیس را وارد کنید.', 'error'); return; }
+      if (u.includes('qsdlthvnfmjbodtdkbqc.supabase.co')) {
+        showToast('برای حفظ استقلال Glass، اتصال به پروژه Supabase هلو مجاز نیست؛ پروژه اختصاصی Glass لازم است.', 'error');
+        return;
+      }
       cloudConfig.url = u;
       cloudConfig.key = k;
       try { localStorage.setItem(CLOUD_CFG_KEY, JSON.stringify(cloudConfig)); }

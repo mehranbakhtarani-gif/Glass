@@ -8842,7 +8842,6 @@
           const active = window.currentMod || 'dashboard';
           dock.querySelectorAll('[data-flow-nav]').forEach((button) => {
             button.classList.toggle('is-active', button.dataset.flowNav === active);
-            button.classList.toggle('is-active', button.dataset.flowNav === active);
             button.setAttribute('aria-current', button.dataset.flowNav === active ? 'page' : 'false');
           });
         };

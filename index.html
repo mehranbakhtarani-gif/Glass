@@ -2155,7 +2155,8 @@
       try {
         await new Promise((resolve, reject) => {
           const tx = db.transaction([LOCAL_DB_STORE, OPERATION_DB_STORE], 'readwrite');
-          tx.objectStore(LOCAL_DB_STORE).clear();
+          tx.objectStore(LOCAL_DB_STORE).delete(STORE_KEY);
+          tx.objectStore(LOCAL_DB_STORE).delete(CLOUD_CONFLICT_DB_KEY);
           tx.objectStore(OPERATION_DB_STORE).clear();
           tx.oncomplete = resolve;
           tx.onerror = () => reject(tx.error || new Error('پاک‌سازی حافظه حسابداری ناموفق بود.'));

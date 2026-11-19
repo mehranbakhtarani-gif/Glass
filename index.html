@@ -2810,6 +2810,13 @@
       'employees', 'payrollRuns', 'fixedAssets', 'depreciationEntries', 'vouchers', 'accountCatalog', 'approvals', 'auditLogs', 'customUnits'
     ];
     let lastSavedState = JSON.parse(JSON.stringify(state));
+    // Metadata for the last snapshot whose IndexedDB transaction completed successfully.
+    let lastSavedMeta = {
+      localUpdated: localStorage.getItem(LOCAL_UPDATED_KEY),
+      operationSequence: localStorage.getItem(OPERATION_SEQUENCE_KEY),
+      cloudOutbox: localStorage.getItem(CLOUD_OUTBOX_KEY)
+    };
+    let localPersistenceFailed = false;
     // آخرین رویداد حسابرسی که برای یک عملیات ثبت شده؛ از تکرار خلاصهٔ قدیمی در ذخیره‌های بعدی جلوگیری می‌کند.
     let lastQueuedAuditId = null;
 
@@ -2866,7 +2873,32 @@
       return { entityChanges: changes, rootChanges };
     }
 
+    function restoreLastDurableLocalSnapshot(error) {
+      if (localPersistenceFailed) return;
+      localPersistenceFailed = true;
+      console.error('Durable local persistence failed; restoring last confirmed snapshot:', error);
+      state = JSON.parse(JSON.stringify(lastSavedState));
+      try {
+        localStorage.setItem(STORE_KEY, JSON.stringify(lastSavedState));
+        if (lastSavedMeta.localUpdated === null) localStorage.removeItem(LOCAL_UPDATED_KEY);
+        else localStorage.setItem(LOCAL_UPDATED_KEY, lastSavedMeta.localUpdated);
+        if (lastSavedMeta.operationSequence === null) localStorage.removeItem(OPERATION_SEQUENCE_KEY);
+        else localStorage.setItem(OPERATION_SEQUENCE_KEY, lastSavedMeta.operationSequence);
+        if (lastSavedMeta.cloudOutbox === null) localStorage.removeItem(CLOUD_OUTBOX_KEY);
+        else localStorage.setItem(CLOUD_OUTBOX_KEY, lastSavedMeta.cloudOutbox);
+      } catch (restoreError) {
+        console.error('Could not restore localStorage metadata after IndexedDB failure:', restoreError);
+      }
+      setCloudBadge('⚠️ حافظه پایدار محلی خطا دارد؛ همگام‌سازی متوقف شد', 'text-rose-300');
+      showToast('ثبت پایدار اطلاعات در حافظه داخلی ناموفق بود. آخرین نسخه تأییدشده بازیابی شد؛ تا بارگذاری مجدد و رفع مشکل، ثبت عملیات متوقف است.', 'error');
+      try { renderAll(); } catch (renderError) { console.error('Render after local persistence rollback failed:', renderError); }
+    }
+
     function saveState() {
+      if (localPersistenceFailed) {
+        showToast('ذخیره‌سازی پایدار دچار خطا شده است؛ برای جلوگیری از ثبت ناقص، عملیات جدید متوقف شد.', 'error');
+        return false;
+      }
       const updatedAt = new Date().toISOString();
       const operationId = createStableId('op').slice(3);
       const sequence = Number(localStorage.getItem(OPERATION_SEQUENCE_KEY) || 0) + 1;
@@ -2898,25 +2930,31 @@
         localStorage.setItem(STORE_KEY, snapshot);
         localStorage.setItem(LOCAL_UPDATED_KEY, updatedAt);
         localStorage.setItem(OPERATION_SEQUENCE_KEY, String(sequence));
-        // صف snapshot قدیمی تا زمان مهاجرت کامل سرور حفظ می‌شود.
         localStorage.setItem(CLOUD_OUTBOX_KEY, updatedAt);
       } catch (e) {
-        console.error('Local save failed:', e);
+        restoreLastDurableLocalSnapshot(e);
         setCloudBadge('⚠️ خطا در ذخیره محلی مرورگر', 'text-rose-300');
-        showToast('ذخیره اطلاعات در مرورگر ناموفق بود؛ فضای ذخیره‌سازی را بررسی کنید.', 'error');
+        showToast('ذخیره اطلاعات در مرورگر ناموفق بود؛ آخرین نسخه تأییدشده بازیابی شد.', 'error');
         return false;
       }
-      const journalWrite = writeLocalMirror(JSON.parse(snapshot), operation);
-      operationJournalBarrier = Promise.all([operationJournalBarrier, journalWrite.catch(() => {})]);
+
+      // Serialize mirror/journal transactions. A rejected write poisons the barrier:
+      // later snapshots cannot silently leapfrog a missing operation.
+      const journalWrite = operationJournalBarrier.then(() => writeLocalMirror(JSON.parse(snapshot), operation));
+      operationJournalBarrier = journalWrite;
+      const savedMeta = {
+        localUpdated: updatedAt,
+        operationSequence: String(sequence),
+        cloudOutbox: updatedAt
+      };
       journalWrite.then(() => {
+        if (localPersistenceFailed) return;
         lastSavedState = JSON.parse(snapshot);
+        lastSavedMeta = savedMeta;
         renderDeviceIdentityStatus();
         scheduleCloudSync();
-      }).catch(e => {
-        console.error('IndexedDB mirror / operation journal failed:', e);
-        setCloudBadge('⚠️ ذخیره دفتر عملیات محلی ناموفق', 'text-amber-300');
-        showToast('دفتر عملیات در حافظه داخلی ثبت نشد؛ همگام‌سازی عملیات جدید تا رفع مشکل متوقف می‌ماند.', 'error');
-        scheduleCloudSync();
+      }).catch(error => {
+        restoreLastDurableLocalSnapshot(error);
       });
       renderCloudSyncStatus();
       return true;

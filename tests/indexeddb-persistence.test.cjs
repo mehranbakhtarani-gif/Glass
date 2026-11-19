@@ -79,7 +79,7 @@ test('rollback latches future saves and restores durable state plus metadata', (
 
 test('cloud sync is scheduled only after the IndexedDB journal write resolves', () => {
   const success = saveState.indexOf('journalWrite.then(');
-  const failure = saveState.indexOf('journalWrite.catch(');
+  const failure = saveState.indexOf('}).catch(error =>', success);
   const sync = saveState.indexOf('scheduleCloudSync()', success);
   assert.ok(success >= 0 && failure > success && sync > success && sync < failure);
 });

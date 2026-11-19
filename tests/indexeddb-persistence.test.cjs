@@ -65,7 +65,7 @@ test('transaction errors and aborts reject instead of being swallowed', () => {
 
 test('save queue is serialized and async failures trigger rollback', () => {
   assert.match(saveState, /operationJournalBarrier\.then\(\(\)\s*=>\s*writeLocalMirror/);
-  assert.match(saveState, /journalWrite\.catch\(error\s*=>\s*\{\s*restoreLastDurableLocalSnapshot\(error\)/);
+  assert.ok(saveState.includes('journalWrite.then(') && saveState.includes('}).catch(error => {') && saveState.includes('restoreLastDurableLocalSnapshot(error);'));
   assert.match(saveState, /operationJournalBarrier\s*=\s*journalWrite/);
 });
 

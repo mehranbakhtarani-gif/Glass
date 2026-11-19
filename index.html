@@ -3480,7 +3480,7 @@
     const JALALI_PERIOD_NAMES = ['فروردین','اردیبهشت','خرداد','تیر','مرداد','شهریور','مهر','آبان','آذر','دی','بهمن','اسفند'];
     function ensureFiscalPeriods(year = state.fiscalYear) {
       const fiscalYear = String(year || '').trim();
-      if (!/^14\\d{2}$/.test(fiscalYear)) throw new Error('سال مالی برای ساخت دوره‌ها معتبر نیست.');
+      if (!/^14\d{2}$/.test(fiscalYear)) throw new Error('سال مالی برای ساخت دوره‌ها معتبر نیست.');
       if (!Array.isArray(state.fiscalPeriods)) state.fiscalPeriods = [];
       const existingMonths = new Set(state.fiscalPeriods.filter(p => String(p.fiscalYear) === fiscalYear).map(p => Number(p.month)));
       for (let month = 1; month <= 12; month++) {
@@ -3505,7 +3505,7 @@
         const fa = '۰۱۲۳۴۵۶۷۸۹', ar = '٠١٢٣٤٥٦٧٨٩';
         const fi = fa.indexOf(ch); return String(fi >= 0 ? fi : ar.indexOf(ch));
       }).split('/')[0];
-      if (/^14\\d{2}$/.test(yearText)) ensureFiscalPeriods(yearText);
+      if (/^14\d{2}$/.test(yearText)) ensureFiscalPeriods(yearText);
       return (state.fiscalPeriods || []).find(p => {
         const start = jalaliDateOrdinal(p.startDate), end = jalaliDateOrdinal(p.endDate);
         return start !== null && end !== null && ordinal >= start && ordinal <= end;
@@ -3580,7 +3580,7 @@
         const fa = '۰۱۲۳۴۵۶۷۸۹', ar = '٠١٢٣٤٥٦٧٨٩';
         const fi = fa.indexOf(ch); return String(fi >= 0 ? fi : ar.indexOf(ch));
       }).split('/')[0];
-      if (/^14\\d{2}$/.test(postingYearMatch)) ensureFiscalPeriods(postingYearMatch);
+      if (/^14\d{2}$/.test(postingYearMatch)) ensureFiscalPeriods(postingYearMatch);
       const matchedFiscalPeriod = findFiscalPeriodForDate(date);
       if (matchedFiscalPeriod && matchedFiscalPeriod.status === 'closed' && source?.type !== 'fiscal_year_close') {
         throw new Error('دوره مالی ' + matchedFiscalPeriod.title + ' ' + matchedFiscalPeriod.fiscalYear + ' بسته است؛ ثبت سند مجاز نیست.');

@@ -1608,6 +1608,11 @@
         <button onclick="saveCloudConfig()" class="touch-btn bg-holoo-700 text-white font-extrabold rounded-xl">✔ ذخیره و تست اتصال</button>
         <button onclick="pullFromSupabase(true)" class="touch-btn bg-sky-700 text-white font-bold rounded-xl">📥 دریافت از ابر</button>
       </div>
+      <div class="border border-rose-200 bg-rose-50 rounded-xl p-3 space-y-2">
+        <div class="font-extrabold text-rose-800">بازنشانی اطلاعات حسابداری</div>
+        <p class="text-[10px] leading-5 text-rose-700">اطلاعات شرکت، نسخه‌های پشتیبان محلی، صف عملیات و وضعیت تعارض این دستگاه پاک می‌شود. جفت‌سازی، توکن امن، شناسه و انتساب کاربر دستگاه حفظ می‌شود.</p>
+        <button onclick="resetLocalAccountingData()" class="touch-btn w-full bg-rose-700 hover:bg-rose-800 text-white rounded-xl font-extrabold">پاک‌سازی کامل اطلاعات حسابداری این دستگاه</button>
+      </div>
     </div>
   </div>
 
@@ -2284,6 +2289,47 @@
       localStorage.setItem(CLOUD_BASELINE_KEY, conflict.remoteUpdatedAt || '');
       await clearCloudConflict();
       await pushToSupabase(true);
+    }
+
+    async function resetLocalAccountingData() {
+      if (!window.confirm('تأیید نهایی: تمام اطلاعات حسابداری و نسخه‌های پشتیبان محلی این دستگاه پاک شود؟ جفت‌سازی و هویت دستگاه حفظ خواهد شد.')) return;
+      if (isSyncing) {
+        showToast('همگام‌سازی در حال اجراست؛ پس از پایان آن دوباره اقدام کنید.', 'error');
+        return;
+      }
+      try {
+        await operationJournalBarrier;
+        const freshState = defaultState();
+        freshState.activeRole = localStorage.getItem(DEVICE_ACTOR_KEY) === 'ehsan' ? 'ehsan' : 'mehran';
+        ensureAuditLogIds(freshState);
+        const db = await openLocalDatabase();
+        try {
+          await new Promise((resolve, reject) => {
+            const tx = db.transaction([LOCAL_DB_STORE, OPERATION_DB_STORE], 'readwrite');
+            tx.objectStore(LOCAL_DB_STORE).delete(STORE_KEY);
+            tx.objectStore(LOCAL_DB_STORE).delete(CLOUD_CONFLICT_DB_KEY);
+            tx.objectStore(OPERATION_DB_STORE).clear();
+            tx.oncomplete = resolve;
+            tx.onerror = () => reject(tx.error || new Error('پاک‌سازی حافظه محلی ناموفق بود.'));
+            tx.onabort = () => reject(tx.error || new Error('پاک‌سازی حافظه محلی لغو شد.'));
+          });
+        } finally {
+          db.close();
+        }
+        [SNAP_KEY, STORE_KEY, LOCAL_UPDATED_KEY, CLOUD_OUTBOX_KEY, CLOUD_BASELINE_KEY].forEach(key => localStorage.removeItem(key));
+        state = freshState;
+        lastSavedState = JSON.parse(JSON.stringify(freshState));
+        lastQueuedAuditId = null;
+        localStorage.setItem(STORE_KEY, JSON.stringify(freshState));
+        await writeLocalMirror(freshState);
+        closeModal('modal-cloud-settings');
+        setCloudBadge('♻️ اطلاعات محلی بازنشانی شد؛ در حال راه‌اندازی اولیه ابر...', 'text-sky-300');
+        showToast('اطلاعات حسابداری محلی پاک شد؛ جفت‌سازی و هویت دستگاه حفظ شده است.');
+        window.location.reload();
+      } catch (error) {
+        console.error('Local accounting reset failed:', error);
+        showToast('بازنشانی کامل نشد؛ تنظیم جفت‌سازی عمداً تغییر نکرد. ' + String(error?.message || error), 'error');
+      }
     }
 
     function saveCloudConfig() {

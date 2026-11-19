@@ -1593,8 +1593,16 @@
         <input type="text" id="sb-key-input" dir="ltr" class="touch-btn w-full border rounded-xl px-2.5 font-mono text-[11px]" />
       </div>
       <div class="p-2.5 rounded-xl bg-slate-50 border text-[11px] space-y-1">
-        <div>جدول متصل: <strong class="font-mono">holoo_sync</strong> | شناسه رکورد: <strong class="font-mono">main_company_state</strong></div>
+        <div>پروژه مستقل: <strong class="font-mono">Glass-Accounting</strong></div>
+        <div>دروازه امن: <strong class="font-mono">glass-gateway</strong> · شرکت: <strong class="font-mono">glass_main_company_state</strong></div>
         <div id="sb-last-sync-label" class="text-slate-500">آخرین همگام‌سازی: —</div>
+      </div>
+      <div class="border rounded-xl p-3 space-y-2">
+        <div class="font-extrabold text-slate-800">جفت‌سازی امن این دستگاه</div>
+        <input id="glass-device-label" type="text" maxlength="80" placeholder="نام دستگاه، مثلاً گوشی مهران" class="touch-btn w-full border rounded-lg px-2.5" />
+        <input id="glass-pairing-code" type="password" autocomplete="off" placeholder="کد محرمانه جفت‌سازی" class="touch-btn w-full border rounded-lg px-2.5" />
+        <button onclick="pairCurrentDevice()" class="touch-btn w-full bg-emerald-700 text-white rounded-xl font-extrabold">🔐 جفت‌سازی و اتصال این دستگاه</button>
+        <p class="text-[10px] text-slate-500 leading-5">کد فقط برای جفت‌سازی اولیه است. توکن اختصاصی دستگاه پس از اتصال در حافظه همین دستگاه ذخیره می‌شود.</p>
       </div>
       <div class="grid grid-cols-2 gap-2">
         <button onclick="saveCloudConfig()" class="touch-btn bg-holoo-700 text-white font-extrabold rounded-xl">✔ ذخیره و تست اتصال</button>
@@ -2023,6 +2031,9 @@
     const SNAP_KEY = 'holoo_textile_import_snaps_v2';
     const CLOUD_CFG_KEY = 'holoo_supabase_cfg_v1';
 
+    const GLASS_DEFAULT_URL = 'https://bdbckuwsilncbvqsknub.supabase.co';
+    const GLASS_DEFAULT_PUBLISHABLE_KEY = 'sb_publishable_QcBjn5E9_KavayJkBOv7zg_HTdnj71v';
+    const GLASS_GATEWAY_PATH = '/functions/v1/glass-gateway';
     let cloudConfig = (() => {
       try {
         const saved = JSON.parse(localStorage.getItem(CLOUD_CFG_KEY) || 'null');
@@ -2030,17 +2041,13 @@
           const savedUrl = String(saved.url).replace(/\/+$/, '');
           const isHolooProject = savedUrl.includes('qsdlthvnfmjbodtdkbqc.supabase.co') ||
             (saved.table === 'holoo_sync' && saved.recordId === 'main_company_state');
-          if (!isHolooProject) return saved;
-          // پاک‌سازی اتصال قدیمی که Glass را به فضای داده Holoo متصل می‌کرد.
-          try { localStorage.removeItem(CLOUD_CFG_KEY); } catch (e) {}
+          if (!isHolooProject && savedUrl === GLASS_DEFAULT_URL) return {
+            url: savedUrl, key: saved.key, table: 'glass_sync', recordId: 'glass_main_company_state'
+          };
+          if (isHolooProject) { try { localStorage.removeItem(CLOUD_CFG_KEY); } catch (e) {} }
         }
       } catch (e) {}
-      return {
-        url: '',
-        key: '',
-        table: 'glass_sync',
-        recordId: 'glass_main_company_state'
-      };
+      return { url: GLASS_DEFAULT_URL, key: GLASS_DEFAULT_PUBLISHABLE_KEY, table: 'glass_sync', recordId: 'glass_main_company_state' };
     })();
 
     let syncTimer = null;
@@ -2094,6 +2101,56 @@
       }
     }
 
+    const DEVICE_TOKEN_KEY = STORE_KEY + '_device_token_v1';
+    function getDeviceToken() { return localStorage.getItem(DEVICE_TOKEN_KEY) || ''; }
+    function getGatewayUrl() {
+      if (!cloudConfig.url || !cloudConfig.key) throw new Error('تنظیمات پروژه Glass کامل نیست.');
+      return cloudConfig.url.replace(/\/$/, '') + GLASS_GATEWAY_PATH;
+    }
+    async function gatewayRequest(action, payload = {}, authenticated = true) {
+      const token = authenticated ? getDeviceToken() : '';
+      if (authenticated && !token) throw new Error('این دستگاه هنوز Pair نشده است؛ ابتدا جفت‌سازی دستگاه را انجام دهید.');
+      const headers = { apikey: cloudConfig.key, 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = 'Bearer ' + token;
+      const response = await fetchWithTimeout(getGatewayUrl(), { method: 'POST', headers, body: JSON.stringify({ action, ...payload }) });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        const messages = {
+          device_unauthorized: 'توکن این دستگاه معتبر نیست یا دسترسی آن لغو شده است.',
+          device_pairing_not_configured: 'کد جفت‌سازی هنوز در تنظیمات امن Supabase فعال نشده است.',
+          pairing_denied: 'کد جفت‌سازی اشتباه است.',
+          device_limit_reached: 'ظرفیت دستگاه‌های این کاربر تکمیل شده است.'
+        };
+        const code = body?.error || '';
+        throw new Error(messages[code] || ('درخواست دروازه Glass ناموفق بود: HTTP ' + response.status + (code ? ' · ' + code : '')));
+      }
+      return body || {};
+    }
+    async function pairCurrentDevice() {
+      const actor = localStorage.getItem(DEVICE_ACTOR_KEY);
+      const lockedActor = localStorage.getItem(DEVICE_ACTOR_LOCK_KEY);
+      const pairingCode = document.getElementById('glass-pairing-code')?.value?.trim() || '';
+      const label = document.getElementById('glass-device-label')?.value?.trim() || '';
+      if (!actor || lockedActor !== actor) { showToast('ابتدا کاربر ثابت این دستگاه را تعیین کنید.', 'error'); return false; }
+      if (!pairingCode || !label) { showToast('کد جفت‌سازی و نام دستگاه را وارد کنید.', 'error'); return false; }
+      try {
+        const result = await gatewayRequest('pair', { pairingCode, actor, label }, false);
+        if (!result.deviceToken || !result.device?.id) throw new Error('پاسخ جفت‌سازی ناقص است.');
+        localStorage.setItem(DEVICE_TOKEN_KEY, result.deviceToken);
+        localStorage.setItem(DEVICE_ID_KEY, result.device.id);
+        const codeInput = document.getElementById('glass-pairing-code');
+        if (codeInput) codeInput.value = '';
+        const labelEl = document.getElementById('sb-last-sync-label');
+        if (labelEl) labelEl.textContent = 'دستگاه امن متصل شد: ' + result.device.label;
+        showToast('این دستگاه با هویت ' + (actor === 'ehsan' ? 'احسان' : 'مهران') + ' به سرور Glass متصل شد.');
+        await renderDeviceIdentityStatus();
+        await pullFromSupabase(false);
+        return true;
+      } catch (error) {
+        showToast(error.message || 'جفت‌سازی دستگاه ناموفق بود.', 'error');
+        return false;
+      }
+    }
     function setCloudBadge(text, colorClass) {
       const el = document.getElementById('cloud-status-badge');
       if (!el) return;
@@ -2231,178 +2288,47 @@
     function saveCloudConfig() {
       const u = document.getElementById('sb-url-input').value.trim().replace(/\/$/, '');
       const k = document.getElementById('sb-key-input').value.trim();
-      if (!u || !k) { showToast('لطفاً URL و Key سوپابیس را وارد کنید.', 'error'); return; }
-      if (u.includes('qsdlthvnfmjbodtdkbqc.supabase.co')) {
-        showToast('برای حفظ استقلال Glass، اتصال به پروژه Supabase هلو مجاز نیست؛ پروژه اختصاصی Glass لازم است.', 'error');
-        return;
+      if (!u || !k) { showToast('URL و Publishable Key پروژه Glass را وارد کنید.', 'error'); return; }
+      if (u.includes('qsdlthvnfmjbodtdkbqc.supabase.co') || u !== GLASS_DEFAULT_URL) {
+        showToast('این نسخه فقط به پروژه مستقل Glass متصل می‌شود؛ URL پروژه Glass را وارد کنید.', 'error'); return;
       }
-      cloudConfig.url = u;
-      cloudConfig.key = k;
+      cloudConfig = { url: u, key: k, table: 'glass_sync', recordId: 'glass_main_company_state' };
       try { localStorage.setItem(CLOUD_CFG_KEY, JSON.stringify(cloudConfig)); }
-      catch (e) { showToast('ذخیره تنظیمات ابری در مرورگر ناموفق بود.', 'error'); return; }
+      catch (e) { showToast('ذخیره تنظیمات اتصال ناموفق بود.', 'error'); return; }
       closeModal('modal-cloud-settings');
-      pushToSupabase(true);
+      if (getDeviceToken()) pullFromSupabase(true);
+      else showToast('تنظیمات ذخیره شد؛ برای همگام‌سازی ابتدا دستگاه را جفت‌سازی کنید.');
     }
 
     async function pushToSupabase(notify = false) {
-      if (!isDeviceActorLocked()) {
-        setCloudBadge('🔒 ابتدا کاربر ثابت این دستگاه را تعیین کنید', 'text-amber-300');
-        return false;
-      }
-      if (!cloudConfig.url || !cloudConfig.key) {
-        setCloudBadge('⚠️ تنظیمات ابر ناقص است', 'text-amber-300');
-        return false;
-      }
+      if (!isDeviceActorLocked()) { setCloudBadge('🔒 ابتدا کاربر ثابت این دستگاه را تعیین کنید', 'text-amber-300'); return false; }
+      if (!getDeviceToken()) { setCloudBadge('🔐 این دستگاه هنوز جفت‌سازی نشده است', 'text-amber-300'); return false; }
       if (isSyncing) { syncPending = true; return false; }
-      isSyncing = true;
-      syncPending = false;
+      isSyncing = true; syncPending = false;
       const revisionAtStart = syncRevision;
-      const snapshot = JSON.stringify(state);
-      const localUpdatedAt = localStorage.getItem(LOCAL_UPDATED_KEY) || new Date().toISOString();
-      const queuedAtStart = localStorage.getItem(CLOUD_OUTBOX_KEY) || '';
-      setCloudBadge('🔄 در حال بررسی نسخه ابری...', 'text-sky-300');
-      let succeeded = false;
       try {
         await operationJournalBarrier;
-        const journalResult = await pushOperationJournalToSupabase();
-        if (!journalResult.supported && journalResult.pendingOperationIds?.length) {
-          throw new Error('سرویس ثبت اتمیک Glass روی دیتابیس مستقل نصب نشده است؛ صف عملیات حفظ شد و ارسال snapshot قدیمی متوقف شد.');
+        const journal = await pushOperationJournalToSupabase();
+        if (journal.conflict) return false;
+        if (journal.applied > 0) {
+          const nowStr = new Date().toLocaleTimeString('fa-IR');
+          setCloudBadge('☁️ ثبت امن عملیات موفق (' + nowStr + ')', 'text-emerald-300');
+          const lbl = document.getElementById('sb-last-sync-label');
+          if (lbl) lbl.textContent = 'آخرین ثبت امن عملیات: ساعت ' + nowStr;
+          if (notify) showToast('عملیات از طریق دروازه امن Glass ثبت شد.');
+          return true;
         }
-        if (journalResult.supported) {
-          if (journalResult.conflict) return false;
-          if (journalResult.applied > 0) {
-            succeeded = true;
-            const nowStr = new Date().toLocaleTimeString('fa-IR');
-            setCloudBadge('☁️ ثبت اتمیک عملیات موفق (' + nowStr + ')', 'text-emerald-300');
-            const lbl = document.getElementById('sb-last-sync-label');
-            if (lbl) lbl.textContent = 'آخرین ثبت اتمیک عملیات: ساعت ' + nowStr;
-            if (notify) showToast('عملیات و سوابق حسابرسی به‌صورت اتمیک ثبت شد.');
-            return true;
-          }
-        }
-        // پیش از ارسال نسخه قدیمی، نسخه ابری با آخرین baseline مقایسه می‌شود.
-
-        const baseEndpoint = `${cloudConfig.url.replace(/\/$/, '')}/rest/v1/${encodeURIComponent(cloudConfig.table)}?id=eq.${encodeURIComponent(cloudConfig.recordId)}&select=data,updated_at`;
-        const checkRes = await fetchWithTimeout(baseEndpoint, {
-          method: 'GET',
-          headers: { 'apikey': cloudConfig.key, 'Authorization': `Bearer ${cloudConfig.key}` }
-        });
-        if (!checkRes.ok) throw new Error(`HTTP ${checkRes.status} هنگام بررسی تعارض`);
-        const currentRows = await checkRes.json();
-        const currentRemote = Array.isArray(currentRows) ? currentRows[0] : null;
-        const baseline = localStorage.getItem(CLOUD_BASELINE_KEY) || '';
-        if (currentRemote && currentRemote.updated_at && baseline && currentRemote.updated_at !== baseline) {
-          await saveCloudConflict({
-            remoteData: currentRemote.data,
-            remoteUpdatedAt: currentRemote.updated_at,
-            localUpdatedAt,
-            detectedAt: new Date().toISOString()
-          });
-          setCloudBadge('⚠️ تعارض نسخه‌ها؛ انتخاب لازم است', 'text-amber-300');
-          showToast('نسخه ابری پس از آخرین دریافت تغییر کرده؛ هیچ نسخه‌ای بازنویسی نشد.', 'error');
-          return false;
-        }
-        if (currentRemote && currentRemote.updated_at && !baseline) {
-          // بدون baseline قابل اعتماد، ارسال خودکار به رکورد موجود ایمن نیست.
-          await saveCloudConflict({
-            remoteData: currentRemote.data,
-            remoteUpdatedAt: currentRemote.updated_at,
-            localUpdatedAt,
-            detectedAt: new Date().toISOString()
-          });
-          setCloudBadge('⚠️ نیاز به تعیین نسخه مرجع', 'text-amber-300');
-          showToast('برای جلوگیری از بازنویسی، نسخه ابری و محلی را مشخص کنید.', 'error');
-          return false;
-        }
-        setCloudBadge('🔄 در حال ذخیره در Supabase...', 'text-sky-300');
-        const payload = {
-          id: cloudConfig.recordId,
-          data: JSON.parse(snapshot),
-          updated_at: localUpdatedAt
-        };
-        let res;
-        if (currentRemote && currentRemote.updated_at) {
-          // Compare-and-swap: فقط اگر timestamp رکورد هنوز همان نسخه خوانده‌شده باشد، به‌روزرسانی کن.
-          const conditionalEndpoint = `${cloudConfig.url.replace(/\/$/, '')}/rest/v1/${encodeURIComponent(cloudConfig.table)}?id=eq.${encodeURIComponent(cloudConfig.recordId)}&updated_at=eq.${encodeURIComponent(currentRemote.updated_at)}`;
-          res = await fetchWithTimeout(conditionalEndpoint, {
-            method: 'PATCH',
-            headers: {
-              'apikey': cloudConfig.key,
-              'Authorization': `Bearer ${cloudConfig.key}`,
-              'Content-Type': 'application/json',
-              'Prefer': 'return=representation'
-            },
-            body: JSON.stringify({ data: payload.data, updated_at: payload.updated_at })
-          });
-          if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-          const changedRows = await res.json().catch(() => []);
-          if (!Array.isArray(changedRows) || changedRows.length === 0) {
-            const latestRes = await fetchWithTimeout(baseEndpoint, {
-              method: 'GET',
-              headers: { 'apikey': cloudConfig.key, 'Authorization': `Bearer ${cloudConfig.key}` }
-            });
-            if (!latestRes.ok) throw new Error('بررسی نسخه جدیدتر ابری ناموفق بود.');
-            const latestRows = await latestRes.json();
-            const latest = Array.isArray(latestRows) ? latestRows[0] : null;
-            if (latest && latest.data) {
-              await saveCloudConflict({
-                remoteData: latest.data,
-                remoteUpdatedAt: latest.updated_at || '',
-                localUpdatedAt,
-                detectedAt: new Date().toISOString()
-              });
-            }
-            setCloudBadge('⚠️ تغییر هم‌زمان شناسایی شد؛ انتخاب لازم است', 'text-amber-300');
-            showToast('هم‌زمان دستگاه دیگری اطلاعات را تغییر داد؛ هیچ تغییری بازنویسی نشد.', 'error');
-            return false;
-          }
-        } else {
-          // ساخت اولین رکورد شرکت؛ در حالت معمول تنها یک بار رخ می‌دهد.
-          const endpoint = `${cloudConfig.url.replace(/\/$/, '')}/rest/v1/${encodeURIComponent(cloudConfig.table)}?on_conflict=id`;
-          res = await fetchWithTimeout(endpoint, {
-            method: 'POST',
-            headers: {
-              'apikey': cloudConfig.key,
-              'Authorization': `Bearer ${cloudConfig.key}`,
-              'Content-Type': 'application/json',
-              'Prefer': 'resolution=ignore-duplicates,return=representation'
-            },
-            body: JSON.stringify(payload)
-          });
-          if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-          const insertedRows = await res.json().catch(() => []);
-          if (!Array.isArray(insertedRows) || insertedRows.length === 0) {
-            throw new Error('رکورد اولیه ساخته نشد؛ احتمالاً دستگاه دیگری هم‌زمان آن را ایجاد کرده است. دوباره دریافت کنید.');
-          }
-        }
-        succeeded = true;
-        // فقط همان نسخه‌ای را از صف خارج کن که واقعاً ارسال شده؛ اگر حین ارسال تغییری رخ داد، صف حفظ می‌شود.
-        if (localStorage.getItem(LOCAL_UPDATED_KEY) === localUpdatedAt &&
-            localStorage.getItem(CLOUD_OUTBOX_KEY) === queuedAtStart &&
-            localStorage.getItem(STORE_KEY) === snapshot &&
-            syncRevision === revisionAtStart) {
-          localStorage.removeItem(CLOUD_OUTBOX_KEY);
-          localStorage.setItem(CLOUD_BASELINE_KEY, localUpdatedAt);
-          // نسخه کامل legacy که همین الان تأیید شد، تمام عملیات محلیِ موجود را پوشش می‌دهد.
-          const coveredOperations = await listPendingOperations(1000000);
-          await acknowledgeOperations(coveredOperations.map(op => op.operationId), localUpdatedAt);
-        }
-        await renderCloudSyncStatus();
-        const nowStr = new Date().toLocaleTimeString('fa-IR');
-        setCloudBadge(`☁️ ذخیره ابری موفق (${nowStr})`, 'text-emerald-300');
-        const lbl = document.getElementById('sb-last-sync-label');
-        if (lbl) lbl.textContent = `آخرین ذخیره موفق در ابر: ساعت ${nowStr}`;
-        if (notify) showToast('اطلاعات در Supabase ذخیره شد ☁️✔');
-      } catch (err) {
-        console.warn('Supabase Push Error:', err);
-        const diagnostic = String(err?.message || err || 'خطای نامشخص').slice(0, 220);
+        if (journal.pendingOperationIds?.length) throw new Error('صف عملیات هنوز تأیید نشده است؛ نسخه محلی حفظ شد.');
+        return true;
+      } catch (error) {
+        const diagnostic = String(error?.message || error || 'خطای نامشخص').slice(0, 220);
         setCloudBadge('⚠️ خطای ابر: ' + diagnostic, 'text-amber-300');
-        showToast('ذخیره ابری ناموفق بود؛ نسخه محلی حفظ شد. علت: ' + diagnostic, 'error');
+        if (notify) showToast('همگام‌سازی انجام نشد؛ اطلاعات محلی حفظ شد. ' + diagnostic, 'error');
+        return false;
       } finally {
         isSyncing = false;
         if (syncPending || syncRevision !== revisionAtStart) scheduleCloudSync();
       }
-      return succeeded;
     }
 
     // پس از دریافت دستی نسخه ابری، یک فایل پشتیبان JSON نیز از طریق مرورگر دانلود می‌شود.
@@ -2423,76 +2349,48 @@
     }
 
     async function pullFromSupabase(notify = false) {
-      if (!isDeviceActorLocked()) {
-        setCloudBadge('🔒 ابتدا کاربر ثابت این دستگاه را تعیین کنید', 'text-amber-300');
-        return false;
-      }
-      if (!cloudConfig.url || !cloudConfig.key) {
-        setCloudBadge('⚠️ تنظیمات ابر ناقص است', 'text-amber-300');
-        return false;
-      }
-      // اگر تغییر محلیِ تأییدنشده داریم، اول همان را ارسال کن؛ pull نباید آن را بازنویسی کند.
+      if (!isDeviceActorLocked()) { setCloudBadge('🔒 ابتدا کاربر ثابت این دستگاه را تعیین کنید', 'text-amber-300'); return false; }
+      if (!getDeviceToken()) { setCloudBadge('🔐 ابتدا این دستگاه را جفت‌سازی کنید', 'text-amber-300'); return false; }
       if (localStorage.getItem(CLOUD_OUTBOX_KEY)) return await pushToSupabase(notify);
       if (isSyncing) { showToast('همگام‌سازی دیگری در حال اجراست؛ کمی بعد دوباره تلاش کنید.', 'info'); return false; }
-      isSyncing = true;
-      setCloudBadge('📥 در حال بررسی نسخه ابری...', 'text-sky-300');
+      isSyncing = true; setCloudBadge('📥 دریافت از دروازه امن Glass...', 'text-sky-300');
       try {
-        const endpoint = `${cloudConfig.url.replace(/\/$/, '')}/rest/v1/${encodeURIComponent(cloudConfig.table)}?id=eq.${encodeURIComponent(cloudConfig.recordId)}&select=data,updated_at`;
-        const res = await fetchWithTimeout(endpoint, {
-          method: 'GET',
-          headers: { 'apikey': cloudConfig.key, 'Authorization': `Bearer ${cloudConfig.key}` }
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const rows = await res.json();
-        if (Array.isArray(rows) && rows.length > 0 && rows[0].data && rows[0].data.vouchers) {
-          const cloudTime = Date.parse(rows[0].updated_at || '');
-          const localTime = Date.parse(localStorage.getItem(LOCAL_UPDATED_KEY) || '');
-          if (Number.isFinite(localTime) && Number.isFinite(cloudTime) && localTime > cloudTime) {
-            setCloudBadge('⚠️ نسخه محلی جدیدتر است؛ ارسال در صف', 'text-amber-300');
-            isSyncing = false;
-            await pushToSupabase(notify);
-            return false;
-          }
-          const incoming = rows[0].data;
-          if (!incoming || !Array.isArray(incoming.vouchers)) throw new Error('ساختار داده ابری معتبر نیست');
-          try {
-            localStorage.setItem(STORE_KEY, JSON.stringify(incoming));
-            if (rows[0].updated_at) localStorage.setItem(LOCAL_UPDATED_KEY, rows[0].updated_at);
-          } catch (storageError) {
-            throw new Error('ذخیره نسخه دریافتی در مرورگر ناموفق بود: ' + storageError.message);
-          }
-          state = incoming;
+        const response = await gatewayRequest('read', {}, true);
+        const snapshot = response.snapshot;
+        if (snapshot?.data && Array.isArray(snapshot.data.vouchers) && snapshot.updated_at) {
+          state = snapshot.data;
           state.activeRole = localStorage.getItem(DEVICE_ACTOR_KEY) === 'ehsan' ? 'ehsan' : 'mehran';
-          lastSavedState = JSON.parse(JSON.stringify(state));
           ensureAuditLogIds(state);
-          if (rows[0].updated_at) localStorage.setItem(CLOUD_BASELINE_KEY, rows[0].updated_at);
-          await renderCloudSyncStatus();
-          renderAll();
+          lastSavedState = JSON.parse(JSON.stringify(state));
+          lastQueuedAuditId = state.auditLogs?.[0]?.id || null;
+          localStorage.setItem(STORE_KEY, JSON.stringify(state));
+          localStorage.setItem(LOCAL_UPDATED_KEY, snapshot.updated_at);
+          localStorage.setItem(CLOUD_BASELINE_KEY, snapshot.updated_at);
+          await writeLocalMirror(state);
+          await renderCloudSyncStatus(); renderAll();
           const nowStr = new Date().toLocaleTimeString('fa-IR');
-          setCloudBadge(`☁️ دریافت و همگام‌سازی موفق (${nowStr})`, 'text-emerald-300');
+          setCloudBadge('☁️ دریافت امن موفق (' + nowStr + ')', 'text-emerald-300');
           const lbl = document.getElementById('sb-last-sync-label');
-          if (lbl) lbl.textContent = `آخرین دریافت موفق از ابر: ساعت ${nowStr}`;
+          if (lbl) lbl.textContent = 'آخرین دریافت امن از ابر: ساعت ' + nowStr;
           if (notify) {
-            try {
-              const backupName = downloadCloudBackup(incoming);
-              showToast('نسخه ابری دریافت شد و فایل پشتیبان در دانلودهای گوشی ذخیره شد: ' + backupName);
-            } catch (downloadError) {
-              console.warn('Cloud backup download failed:', downloadError);
-              showToast('اطلاعات در حافظه برنامه ذخیره شد، اما دانلود فایل پشتیبان انجام نشد.', 'error');
-            }
+            try { const backupName = downloadCloudBackup(state); showToast('نسخه ابری دریافت شد؛ پشتیبان: ' + backupName); }
+            catch (e) { showToast('داده دریافت شد، اما دانلود پشتیبان انجام نشد.', 'error'); }
           }
           return true;
         }
-        isSyncing = false;
-        return await pushToSupabase(notify);
-      } catch (err) {
-        console.warn('Supabase Pull Error:', err);
+        if (!snapshot) {
+          saveState();
+          await operationJournalBarrier;
+          isSyncing = false;
+          return await pushToSupabase(notify);
+        }
+        throw new Error('ساختار snapshot ابری معتبر نیست؛ داده محلی دست‌نخورده ماند.');
+      } catch (error) {
+        const diagnostic = String(error?.message || error || '').slice(0, 220);
         setCloudBadge('⚠️ دریافت ناموفق؛ نسخه محلی حفظ شد', 'text-amber-300');
-        if (notify) showToast('دریافت از ابر ناموفق بود؛ اطلاعات محلی دست‌نخورده ماند.', 'error');
+        if (notify) showToast('دریافت از ابر ناموفق بود: ' + diagnostic, 'error');
         return false;
-      } finally {
-        isSyncing = false;
-      }
+      } finally { isSyncing = false; }
     }
 
     function scheduleCloudSync() {
@@ -2678,247 +2576,43 @@
 
     async function pushOperationJournalToSupabase() {
       const operations = await listPendingOperations(100);
-      if (!operations.length) return { supported: false, applied: 0, pendingOperationIds: [] };
-      const queuedAtStart = localStorage.getItem(CLOUD_OUTBOX_KEY) || '';
-      const localUpdatedAt = localStorage.getItem(LOCAL_UPDATED_KEY) || '';
-      const rpcUrl = cloudConfig.url.replace(/\/$/, '') + '/rest/v1/rpc/glass_apply_state_operation';
+      if (!operations.length) return { supported: true, applied: 0, pendingOperationIds: [] };
       let expectedUpdatedAt = localStorage.getItem(CLOUD_BASELINE_KEY) || null;
       let applied = 0;
-      let didMerge = false;
-      let latestServerUpdatedAt = expectedUpdatedAt;
-
       for (const operation of operations) {
-        const response = await fetchWithTimeout(rpcUrl, {
-          method: 'POST',
-          headers: {
-            'apikey': cloudConfig.key,
-            'Authorization': 'Bearer ' + cloudConfig.key,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            p_record_id: operation.companyRecordId || cloudConfig.recordId,
-            p_expected_updated_at: expectedUpdatedAt,
-            p_data: operation.payload,
-            p_entity_changes: operation.entityChanges || [],
-            p_root_changes: operation.rootChanges || {},
-            p_operation_id: operation.operationId,
-            p_actor: operation.actor,
-            p_device_id: operation.deviceId,
-            p_device_sequence: operation.sequence,
-            p_operation_type: operation.operationType,
-            p_summary: operation.summary,
-            p_client_created_at: operation.createdAt
-          })
-        });
-
-        if (response.status === 404) return { supported: false, applied: 0, pendingOperationIds: operations.map(op => op.operationId) };
-        const resultBody = await response.json().catch(() => null);
-        if (!response.ok) {
-          if (response.status === 400 && JSON.stringify(resultBody || {}).includes('PGRST202')) {
-            return { supported: false, applied: 0, pendingOperationIds: operations.map(op => op.operationId) };
-          }
-          const detail = resultBody?.message || resultBody?.details || resultBody?.hint || (resultBody ? JSON.stringify(resultBody).slice(0, 240) : '');
-          throw new Error('ثبت عملیات اتمیک ناموفق بود: HTTP ' + response.status + (detail ? ' — ' + detail : ''));
-        }
-        const result = Array.isArray(resultBody) ? resultBody[0] : resultBody;
+        const resultBody = await gatewayRequest('apply', { operation: {
+          operationId: operation.operationId, sequence: operation.sequence, expectedUpdatedAt,
+          payload: operation.payload, entityChanges: operation.entityChanges || [],
+          rootChanges: operation.rootChanges || {}, operationType: operation.operationType || 'state_snapshot',
+          summary: operation.summary || 'ذخیره وضعیت شرکت', createdAt: operation.createdAt
+        } }, true);
+        const result = resultBody.result;
         if (!result || !['applied', 'already_applied'].includes(result.status)) {
           if (result?.status === 'conflict') {
-            const readUrl = cloudConfig.url.replace(/\/$/, '') + '/rest/v1/' +
-              encodeURIComponent(cloudConfig.table) + '?id=eq.' +
-              encodeURIComponent(cloudConfig.recordId) + '&select=data,updated_at';
-            const readRes = await fetchWithTimeout(readUrl, {
-              headers: { 'apikey': cloudConfig.key, 'Authorization': 'Bearer ' + cloudConfig.key }
+            const remote = await gatewayRequest('read', {}, true);
+            if (remote.snapshot?.data) await saveCloudConflict({
+              remoteData: remote.snapshot.data, remoteUpdatedAt: remote.snapshot.updated_at || '',
+              localUpdatedAt: localStorage.getItem(LOCAL_UPDATED_KEY) || '', detectedAt: new Date().toISOString()
             });
-            if (readRes.ok) {
-              const rows = await readRes.json();
-              if (Array.isArray(rows) && rows[0]?.data) {
-                await saveCloudConflict({
-                  remoteData: rows[0].data,
-                  remoteUpdatedAt: rows[0].updated_at || result.updated_at || '',
-                  localUpdatedAt,
-                  detectedAt: new Date().toISOString()
-                });
-              }
-            }
             setCloudBadge('⚠️ تعارض عملیات؛ هیچ نسخه‌ای بازنویسی نشد', 'text-amber-300');
-            showToast('عملیات با نسخه جدیدتری از دستگاه دیگر برخورد کرد؛ انتخاب نسخه لازم است.', 'error');
-            return { supported: true, conflict: true, applied };
+            showToast('دستگاه دیگری اطلاعات شرکت را تغییر داده است؛ صف محلی حفظ شد.', 'error');
+            return { supported: true, conflict: true, applied, pendingOperationIds: operations.slice(applied).map(x => x.operationId) };
           }
-          throw new Error('پاسخ RPC عملیات معتبر نیست.');
+          throw new Error('پاسخ ثبت اتمیک سرور معتبر نیست.');
         }
-
-        latestServerUpdatedAt = result.updated_at || latestServerUpdatedAt;
-        if (result.merged === true) {
-          // Keep the original baseline while draining this device's queued operations.
-          // Advancing it here would let a later stale full snapshot overwrite the merge.
-          didMerge = true;
-        } else if (!didMerge) {
-          expectedUpdatedAt = result.updated_at || expectedUpdatedAt;
-          if (expectedUpdatedAt) localStorage.setItem(CLOUD_BASELINE_KEY, expectedUpdatedAt);
-        }
-        await acknowledgeOperations([operation.operationId], latestServerUpdatedAt || new Date().toISOString());
+        expectedUpdatedAt = result.updated_at || expectedUpdatedAt;
+        if (expectedUpdatedAt) localStorage.setItem(CLOUD_BASELINE_KEY, expectedUpdatedAt);
+        await acknowledgeOperations([operation.operationId], expectedUpdatedAt || new Date().toISOString());
         applied++;
       }
-
-      const remaining = await listPendingOperations(1);
-      const localSnapshotUnchanged =
-        localStorage.getItem(LOCAL_UPDATED_KEY) === localUpdatedAt &&
-        localStorage.getItem(CLOUD_OUTBOX_KEY) === queuedAtStart;
-      if (!remaining.length && didMerge && localSnapshotUnchanged) {
-        // The server may now contain disjoint edits from another device.
-        // Refresh the merged snapshot locally before clearing the outbox/baseline.
-        const readUrl = cloudConfig.url.replace(/\/$/, '') + '/rest/v1/' +
-          encodeURIComponent(cloudConfig.table) + '?id=eq.' +
-          encodeURIComponent(cloudConfig.recordId) + '&select=data,updated_at';
-        const readRes = await fetchWithTimeout(readUrl, {
-          headers: { 'apikey': cloudConfig.key, 'Authorization': 'Bearer ' + cloudConfig.key }
-        });
-        if (!readRes.ok) throw new Error('دریافت نسخه ادغام‌شده پس از ثبت عملیات ناموفق بود.');
-        const rows = await readRes.json();
-        const latest = Array.isArray(rows) ? rows[0] : null;
-        if (!latest?.data || !Array.isArray(latest.data.vouchers) || !latest.updated_at) {
-          throw new Error('نسخه ادغام‌شده ابری ساختار معتبر ندارد؛ صف محلی حفظ شد.');
-        }
-        state = latest.data;
-        state.activeRole = localStorage.getItem(DEVICE_ACTOR_KEY) === 'ehsan' ? 'ehsan' : 'mehran';
-        ensureAuditLogIds(state);
-        lastSavedState = JSON.parse(JSON.stringify(state));
-        lastQueuedAuditId = state.auditLogs?.[0]?.id || null;
-        const mergedSnapshot = JSON.stringify(state);
-        localStorage.setItem(STORE_KEY, mergedSnapshot);
-        localStorage.setItem(LOCAL_UPDATED_KEY, latest.updated_at);
-        localStorage.setItem(CLOUD_BASELINE_KEY, latest.updated_at);
+      const remaining = await listPendingOperations(100000);
+      if (!remaining.length) {
         localStorage.removeItem(CLOUD_OUTBOX_KEY);
-        await writeLocalMirror(state);
-        renderAll();
-      } else if (!remaining.length && !didMerge && localSnapshotUnchanged) {
-        if (latestServerUpdatedAt) localStorage.setItem(CLOUD_BASELINE_KEY, latestServerUpdatedAt);
-        localStorage.removeItem(CLOUD_OUTBOX_KEY);
-      } else if (remaining.length) {
-        scheduleCloudSync();
+        if (expectedUpdatedAt) localStorage.setItem(CLOUD_BASELINE_KEY, expectedUpdatedAt);
       }
       await renderCloudSyncStatus();
-      return { supported: true, applied, merged: didMerge };
+      return { supported: true, applied, pendingOperationIds: remaining.map(x => x.operationId) };
     }
-    async function readLocalMirror() {
-      const db = await openLocalDatabase();
-      try {
-        return await new Promise((resolve, reject) => {
-          const tx = db.transaction(LOCAL_DB_STORE, 'readonly');
-          const request = tx.objectStore(LOCAL_DB_STORE).get(STORE_KEY);
-          request.onsuccess = () => resolve(request.result || null);
-          request.onerror = () => reject(request.error || new Error('خواندن نسخه محلی ناموفق بود.'));
-        });
-      } finally { db.close(); }
-    }
-    async function prepareLocalStorageMirror() {
-      try {
-        const localRaw = localStorage.getItem(STORE_KEY);
-        const mirror = await readLocalMirror();
-        if (!localRaw && mirror && mirror.payload && typeof mirror.payload === 'object') {
-          state = mirror.payload;
-          lastSavedState = JSON.parse(JSON.stringify(state));
-          ensureAuditLogIds(state);
-          localStorage.setItem(STORE_KEY, JSON.stringify(state));
-          localStorage.setItem(LOCAL_UPDATED_KEY, mirror.updatedAt || new Date().toISOString());
-          setCloudBadge('💾 بازیابی از حافظه داخلی گوشی', 'text-emerald-300');
-        } else if (localRaw) {
-          await writeLocalMirror(JSON.parse(localRaw));
-        }
-      } catch (e) {
-        console.warn('Local IndexedDB mirror unavailable:', e);
-        setCloudBadge('⚠️ پشتیبان دوم محلی در دسترس نیست', 'text-amber-300');
-      }
-    }
-    function isValidBackupData(data) {
-      if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
-      const requiredArrays = ['products', 'warehouses', 'parties', 'invoices', 'vouchers'];
-      if (!requiredArrays.every(key => Array.isArray(data[key]))) return false;
-      if (!data.settings || typeof data.settings !== 'object' || Array.isArray(data.settings)) return false;
-      return true;
-    }
-
-    let state = (() => {
-      try {
-        const raw = localStorage.getItem(STORE_KEY);
-        if (raw) {
-          // نسخه‌های محلی قدیمی که timestamp ندارند، در اولین اجرا محافظت می‌شوند.
-          if (!localStorage.getItem(LOCAL_UPDATED_KEY)) localStorage.setItem(LOCAL_UPDATED_KEY, new Date().toISOString());
-          return JSON.parse(raw);
-        }
-        return defaultState();
-      } catch (e) { return defaultState(); }
-    })();
-
-    if (!Array.isArray(state.checks)) state.checks = [];
-    if (!Array.isArray(state.guarantees)) state.guarantees = [];
-    if (!Array.isArray(state.payableCommitments)) state.payableCommitments = [];
-    if (!Array.isArray(state.treasuryTxs)) state.treasuryTxs = [];
-    if (!Array.isArray(state.accountCatalog) || !state.accountCatalog.length) state.accountCatalog = buildAccountCatalog();
-    state.accountCatalog.filter(a => a.level === 'subsidiary').forEach(a => { if (!CHART_ACCOUNTS.some(existing => existing.code === a.code)) CHART_ACCOUNTS.push({ code: a.code, name: a.name }); });
-    // Add the supplier-advance account to existing installations without replacing their custom chart.
-    if (!state.accountCatalog.some(a => a.level === 'subsidiary' && a.code === '1107')) state.accountCatalog.push({ id: 'SUB-1107', code: '1107', name: 'پیش‌پرداخت به تأمین‌کنندگان', level: 'subsidiary', parentId: 'GL-11', system: true, active: true });
-    if (!state.accountCatalog.some(a => a.level === 'subsidiary' && a.code === '2106')) state.accountCatalog.push({ id: 'SUB-2106', code: '2106', name: 'بستانکاران هزینه‌های واردات', level: 'subsidiary', parentId: 'GL-21', system: true, active: true });
-    if (!Array.isArray(state.fxCommitments)) state.fxCommitments = [];
-    if (!Array.isArray(state.employees)) state.employees = [];
-    if (!Array.isArray(state.payrollRuns)) state.payrollRuns = [];
-    if (!Array.isArray(state.fixedAssets)) state.fixedAssets = [];
-    if (!Array.isArray(state.depreciationEntries)) state.depreciationEntries = [];
-    if (!state.payrollSettings || typeof state.payrollSettings !== 'object') state.payrollSettings = { employeeInsuranceRate: 7, employerInsuranceRate: 23 };
-    if (!Number.isFinite(Number(state.payrollSettings.employeeInsuranceRate))) state.payrollSettings.employeeInsuranceRate = 7;
-    if (!Number.isFinite(Number(state.payrollSettings.employerInsuranceRate))) state.payrollSettings.employerInsuranceRate = 23;
-    (state.imports || []).forEach(m => {
-      if (!Number(m.carryingRate)) m.carryingRate = Number(m.fxRate || 0);
-      if (!Array.isArray(m.revaluationHistory)) m.revaluationHistory = [];
-    });
-    state.fxCommitments.forEach(c => {
-      if (!Number(c.carryingRate)) c.carryingRate = Number(c.initialRate || 0);
-      if (!Array.isArray(c.revaluationHistory)) c.revaluationHistory = [];
-      if (c.ledgerPosted === undefined) c.ledgerPosted = false;
-      if (!c.offsetAccountCode) c.offsetAccountCode = '1105';
-    });
-    if (!state.fxRates || typeof state.fxRates !== 'object') state.fxRates = { USD: 0, CNY: 0, EUR: 0 };
-    if (!Array.isArray(state.parties)) state.parties = [];
-    state.parties.forEach(p => {
-      if (!p.subledgerId) p.subledgerId = 'PARTY-' + String(p.id || createStableId('party'));
-      if (!p.ledgerAccountCode) p.ledgerAccountCode = String(p.role || '').includes('تأمین') ? '2101' : '1103';
-      if (!p.accountingStatus) p.accountingStatus = 'active';
-    });
-
-    // سازگاری با نقش‌های نسخه‌های قبلی؛ مدیرعامل به مهران و سایر نقش‌ها به احسان منتقل می‌شوند.
-    const LEGACY_ROLE_MAP = { ceo: 'mehran', accountant: 'ehsan', importer: 'ehsan', warehouse: 'ehsan' };
-    const VALID_USER_ROLES = ['mehran', 'ehsan'];
-    if (!localStorage.getItem(DEVICE_ACTOR_KEY)) {
-      localStorage.setItem(DEVICE_ACTOR_KEY, VALID_USER_ROLES.includes(state.activeRole) ? state.activeRole : 'mehran');
-    }
-    state.activeRole = localStorage.getItem(DEVICE_ACTOR_KEY) === 'ehsan' ? 'ehsan' : 'mehran';
-    if (!VALID_USER_ROLES.includes(state.activeRole)) {
-      state.activeRole = LEGACY_ROLE_MAP[state.activeRole] || 'mehran';
-    }
-
-    const SYNC_ENTITY_COLLECTIONS = [
-      'warehouses', 'products', 'parties', 'invoices', 'orders', 'imports', 'fxCommitments',
-      'bankAccounts', 'checks', 'guarantees', 'payableCommitments', 'treasuryTxs', 'bankReconcileItems',
-      'employees', 'payrollRuns', 'fixedAssets', 'depreciationEntries', 'vouchers', 'accountCatalog', 'approvals', 'auditLogs', 'customUnits'
-    ];
-    let lastSavedState = JSON.parse(JSON.stringify(state));
-    // آخرین رویداد حسابرسی که برای یک عملیات ثبت شده؛ از تکرار خلاصهٔ قدیمی در ذخیره‌های بعدی جلوگیری می‌کند.
-    let lastQueuedAuditId = null;
-
-    function ensureAuditLogIds(target) {
-      if (!Array.isArray(target.auditLogs)) target.auditLogs = [];
-      target.auditLogs.forEach((entry, index) => {
-        if (!entry || typeof entry !== 'object' || entry.id !== undefined && entry.id !== null) return;
-        const seed = [entry.time || '', entry.user || '', entry.action || '', index].join('|');
-        let hash = 2166136261;
-        for (let i = 0; i < seed.length; i++) {
-          hash ^= seed.charCodeAt(i);
-          hash = Math.imul(hash, 16777619);
-        }
-        entry.id = 'audit_' + (hash >>> 0).toString(16) + '_' + index;
-      });
-    }
-    ensureAuditLogIds(state);
 
     function buildEntityChangeSet(previous, current, sequence) {
       const changes = [];

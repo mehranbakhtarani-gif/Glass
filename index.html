@@ -3582,9 +3582,10 @@
       for (const line of lines) {
         const code = String(line?.code || '').trim();
         if (!code) throw new Error('ردیف سند فاقد کد حساب است.');
-        const account = catalog.find(item => String(item.code) === code);
-        if (!account || account.level !== 'subsidiary') {
-          throw new Error('حساب ' + code + ' در کدینگ وجود ندارد یا سطح آن معینِ قابل ثبت نیست.');
+        const matchingAccounts = catalog.filter(item => String(item.code) === code);
+        const account = matchingAccounts[0];
+        if (matchingAccounts.length !== 1 || !account || account.level !== 'subsidiary' || !/^\\d{4,8}$/.test(code)) {
+          throw new Error('حساب ' + code + ' در کدینگ یکتا نیست یا سطح آن معینِ قابل ثبت نیست.');
         }
         if (account.active === false) throw new Error('حساب ' + code + ' غیرفعال است و امکان ثبت گردش ندارد.');
         const normalBalance = account.normalBalance || account.nature || inferAccountNormalBalance(code);
@@ -3592,12 +3593,12 @@
           throw new Error('ماهیت حساب ' + code + ' در اطلاعات کدینگ معتبر نیست.');
         }
         const general = catalog.find(item => String(item.id) === String(account.parentId));
-        if (!general || general.level !== 'general' || general.active === false) {
-          throw new Error('حساب کلِ والد برای معین ' + code + ' معتبر یا فعال نیست.');
+        if (!general || general.level !== 'general' || general.active === false || !code.startsWith(String(general.code || ''))) {
+          throw new Error('حساب کلِ والد برای معین ' + code + ' معتبر، هم‌سطح یا فعال نیست.');
         }
         const group = catalog.find(item => String(item.id) === String(general.parentId));
-        if (!group || group.level !== 'group' || group.active === false) {
-          throw new Error('گروه والد حساب ' + code + ' معتبر یا فعال نیست.');
+        if (!group || group.level !== 'group' || group.active === false || !String(general.code || '').startsWith(String(group.code || ''))) {
+          throw new Error('گروه والد حساب ' + code + ' معتبر، هم‌سطح یا فعال نیست.');
         }
 
         const partyRequired = account.requiresParty === true || requiredPartyCodes.has(code);
@@ -3607,7 +3608,7 @@
         }
         if (partyId) {
           const party = parties.find(item => String(item.id) === partyId);
-          if (!party || party.accountingStatus === 'inactive' || party.accountingStatus === 'blocked') {
+          if (!party || party.accountingStatus !== 'active') {
             throw new Error('طرف حساب ردیف ' + code + ' وجود ندارد یا از نظر حسابداری غیرفعال است.');
           }
           if (partyRequired && !String(party.subledgerId || '').trim()) {

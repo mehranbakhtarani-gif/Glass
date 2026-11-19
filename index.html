@@ -2029,10 +2029,10 @@
         if (saved && saved.url && saved.key) return saved;
       } catch (e) {}
       return {
-        url: 'https://qsdlthvnfmjbodtdkbqc.supabase.co',
-        key: 'sb_publishable_pqLUltTUvAEPnE786BFKWw_uc8_R5Fk',
-        table: 'holoo_sync',
-        recordId: 'main_company_state'
+        url: '',
+        key: '',
+        table: 'glass_sync',
+        recordId: 'glass_main_company_state'
       };
     })();
 
@@ -2254,6 +2254,9 @@
       try {
         await operationJournalBarrier;
         const journalResult = await pushOperationJournalToSupabase();
+        if (!journalResult.supported && journalResult.pendingOperationIds?.length) {
+          throw new Error('سرویس ثبت اتمیک Glass روی دیتابیس مستقل نصب نشده است؛ صف عملیات حفظ شد و ارسال snapshot قدیمی متوقف شد.');
+        }
         if (journalResult.supported) {
           if (journalResult.conflict) return false;
           if (journalResult.applied > 0) {
@@ -2667,7 +2670,7 @@
       if (!operations.length) return { supported: false, applied: 0, pendingOperationIds: [] };
       const queuedAtStart = localStorage.getItem(CLOUD_OUTBOX_KEY) || '';
       const localUpdatedAt = localStorage.getItem(LOCAL_UPDATED_KEY) || '';
-      const rpcUrl = cloudConfig.url.replace(/\/$/, '') + '/rest/v1/rpc/holoo_apply_state_operation';
+      const rpcUrl = cloudConfig.url.replace(/\/$/, '') + '/rest/v1/rpc/glass_apply_state_operation';
       let expectedUpdatedAt = localStorage.getItem(CLOUD_BASELINE_KEY) || null;
       let applied = 0;
       let didMerge = false;
@@ -5420,7 +5423,7 @@
       }
 
       saveState(); document.getElementById('invoice-form-card').classList.add('hidden'); renderAll();
-      showToast(`فاکتور #${faNum(id)} ثبت، سند حسابداری صادر و در Supabase همگام شد ✔`);
+      showToast(`فاکتور #${faNum(id)} در حافظه محلی ثبت شد؛ همگام‌سازی پس از تأیید سرور انجام می‌شود.`);
     }
 
         function renderInvoicesModule() {

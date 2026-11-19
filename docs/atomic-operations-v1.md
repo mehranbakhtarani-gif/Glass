@@ -1,8 +1,8 @@
-# Glass Atomic Operations — Phase 1
+# Glass Atomic Operations — Backend Foundation
 
 ## Scope
 
-This change establishes a safe boundary for the next multi-device accounting work. It does **not** claim that invoice posting is already a server-side database transaction.
+This document tracks the backend foundation for the independent Glass application. The current database layer provides a transaction-safe state journal boundary; it does **not** yet make invoice posting production-ready or enable client-side writes.
 
 ## Findings from the current client
 
@@ -11,71 +11,73 @@ This change establishes a safe boundary for the next multi-device accounting wor
 - Device ID and actor assignment are stored in browser storage. They are useful for attribution and workflow, but they are **not authentication** and must not be trusted as authorization.
 - `submitInvoice()` currently allocates invoice IDs in the browser using the current maximum ID, then mutates invoice, voucher, stock/batches, kardex, and settlement balance before calling `saveState()`.
 - `postVoucher()` likewise allocates voucher IDs in the browser using the current maximum ID.
-- Therefore, two devices can independently allocate the same next invoice or voucher number. A client-side idempotency key alone cannot prevent this.
-- The old cloud configuration default pointed Glass at the `Holoo pro` Supabase project and the `holoo_sync/main_company_state` record. That violated the requirement that Glass remain independent from the Holoo application.
+- Therefore, two devices can independently allocate the same next invoice or voucher number.
 
-## Changes in this phase
+## Deployed independent Supabase foundation
 
-1. Removed the embedded Holoo Supabase URL and publishable key from Glass defaults.
-2. Changed the default cloud namespace to `glass_sync / glass_main_company_state`; URL and key must be configured explicitly for a dedicated Glass backend.
-3. Changed the RPC endpoint to `glass_apply_state_operation`, so Glass does not silently call the Holoo-specific RPC.
-4. Made synchronization fail closed when pending operations exist but the Glass atomic RPC is unavailable. The local outbox is retained; the client does not fall back to uploading a legacy full snapshot in that case.
-5. Changed invoice confirmation wording so it no longer claims cloud synchronization before the server has acknowledged it.
+Target project: `Glass-Accounting` (project ref `bdbckuwsilncbvqsknub`). The existing Holoo Supabase project was not modified.
 
-## Required server transaction contract
+Migration: `20261119113420_glass_atomic_sync_foundation_v1`
 
-The dedicated Glass backend must implement and test a transaction boundary before multi-device accounting is enabled.
+Created objects:
+- `public.glass_sync`: company state snapshot, monotonic revision, server timestamp; RLS enabled; no direct anon/authenticated grants.
+- `private.glass_devices`: device identity and revocable token-hash storage; no credentials have been provisioned yet.
+- `private.glass_operations`: idempotency journal with unique company/operation and company/device/sequence constraints.
+- `private.glass_operation_log`: append-only operation audit metadata.
+- `public.glass_apply_state_operation(...)`: transaction-scoped state operation RPC.
 
-### State-operation RPC
+RPC behavior:
+1. Serializes operations by company using a transaction advisory lock.
+2. Returns `already_applied` for a replay of a committed operation ID.
+3. Requires the expected server timestamp to match the current snapshot; stale baselines return `conflict`.
+4. Writes the snapshot, operation journal row, and audit row in the same PostgreSQL transaction.
+5. Rejects a reused device sequence with a different operation ID.
+6. Exposes execution to `service_role` only. It is deliberately not callable by `anon` or `authenticated`.
 
-`glass_apply_state_operation` must, in one PostgreSQL transaction:
+Important limitation: this first RPC uses strict whole-snapshot compare-and-swap. It stores entity/root change metadata for audit/future reconciliation but does not yet merge disjoint entity changes. This is safer than silently overwriting another device, but it may return conflicts that need resolution.
 
-1. Resolve and lock the target company state row (`SELECT ... FOR UPDATE`).
-2. Check the company revision / expected baseline.
-3. Check idempotency using a unique key scoped to the company (and preferably a second unique constraint on company + device + device sequence).
-4. Return `already_applied` for a replay of an already committed operation.
-5. Reject stale or conflicting edits without overwriting another device's newer data.
-6. Apply the accepted entity/root changes and update the aggregate state revision.
-7. Insert the operation/audit record.
-8. Commit the state update and operation log together; any error must roll back both.
+## Verification performed
 
-The response must include a stable status (`applied`, `already_applied`, or `conflict`) and the committed server revision/timestamp. Acknowledgement in IndexedDB must happen only after this response.
+- Migration recorded successfully in Supabase.
+- Schema inspection confirms all four tables exist and `public.glass_sync` has RLS enabled.
+- Privilege checks confirm anon cannot read `glass_sync` or execute the RPC; service_role has the required access.
+- Transaction test returned:
+  - first operation: `applied`, revision 1;
+  - retry of the same operation ID: `already_applied`, same revision/timestamp;
+  - stale second operation: `conflict`, no overwrite.
+- Test ran inside a transaction and was rolled back; no test company data was retained.
+- Security and performance advisors were run.
 
-### Accounting posting RPC
+## Security follow-up required
 
-The state-operation RPC is not sufficient by itself to guarantee accounting correctness. A dedicated command such as `glass_post_invoice` is required for invoice posting. It must execute under a company-level transaction/lock and atomically:
+- The security advisor flagged RLS disabled on the three tables inside the non-exposed `private` schema. Direct privilege checks confirmed anon and authenticated have no SELECT access to those tables, but RLS should be enabled as defense in depth. This is a pending hardening item.
+- No device tokens have been issued or stored. Until a pairing gateway validates revocable device credentials, no browser device should be allowed to call write RPCs.
+- The publishable key is public by design and is not a device credential. Never place a service-role or secret key in Glass frontend code.
+- The user's preference for no password screen can be preserved with device pairing, but the server must still authenticate each paired device.
 
-- allocate invoice and voucher numbers on the server (never from `Math.max(...)+1` in the browser);
-- enforce uniqueness for operation ID, invoice number, and voucher source/event;
-- revalidate party, account, fiscal period, warehouse, and product references against the locked server state;
-- recalculate or independently verify quantities, amounts, tax, FIFO allocations, and cost of goods sold;
-- update invoice, voucher, stock/batches, kardex, and cash/bank balance as one unit;
-- append the audit/operation log in the same transaction;
-- return the canonical committed invoice, voucher, and new company revision.
+## Not completed
 
-A failed validation must leave every accounting subsystem unchanged. Retries with the same operation ID must return the original result rather than posting again.
+- The browser still calls the RPC directly with the publishable key; because execution is service_role-only, client writes remain blocked by design until a secure Edge Function gateway is deployed and the client is routed through it.
+- Device pairing and revocation flow is not implemented.
+- The conflict read path must be routed through the authenticated gateway; the client must not receive unrestricted direct read access to the company snapshot.
+- `glass_post_invoice` is not implemented. Invoice/voucher numbering, full account/period/warehouse validation, tax/FIFO recalculation, and atomic posting across invoice, voucher, stock, kardex, treasury, and audit remain future work.
+- No live multi-device concurrency or browser end-to-end test has been run.
 
-## Security and deployment gate
+## Next implementation order
 
-- The browser publishable/anon key is not a secret and must never be treated as one.
-- A locally stored `deviceId` or actor name is not proof of device identity.
-- The user's preference for no password screen can be preserved in the UI, but production write access still needs a trustworthy authorization mechanism (for example, device pairing with revocable credentials or an equivalent server-verified identity). Public unrestricted writes are not an acceptable substitute.
-- Do not deploy migrations or functions to the existing `Holoo pro` Supabase project. Glass requires its own dedicated Supabase project and explicit confirmation of that target.
-- New tables/functions may require explicit Data API exposure/grants under current Supabase defaults; apply least privilege and RLS intentionally.
+1. Enable RLS on the private device/journal/audit tables and keep them inaccessible to anon/authenticated.
+2. Implement a server-only device-pairing bootstrap and revocable per-device credentials.
+3. Deploy an Edge Function gateway that validates each device token, then invokes the service-role RPC; never expose the service-role key to the browser.
+4. Update Glass to use the gateway for sync and conflict reads.
+5. Implement `glass_post_invoice` with server-generated invoice/voucher numbers and atomic accounting validation/posting.
+6. Run concurrent-device, retry, rollback, stale-baseline, and unauthorized-device acceptance tests.
 
-## Not completed in this phase
-
-- No Supabase schema or RPC has been deployed.
-- No live multi-device transaction test has been run.
-- Invoice/voucher number allocation and full accounting validation are still client-side until the command RPC is implemented.
-- This phase is a fail-safe isolation and contract step, not a claim of production-ready atomic posting.
-
-## Acceptance tests for the backend phase
+## Acceptance criteria before production accounting use
 
 1. Two devices submit the same operation ID concurrently: exactly one operation is committed; the other receives `already_applied`.
-2. Two devices submit different operations against the same baseline: one is serialized; the other either safely merges disjoint entities or receives a conflict. No update is silently lost.
+2. Two devices submit different operations against the same baseline: one is serialized; the other safely merges disjoint changes or receives an explicit conflict. No update is silently lost.
 3. Two devices request the next invoice/voucher number concurrently: unique server-generated numbers are returned.
 4. A forced error after voucher creation but before stock update rolls back the entire transaction, including audit log.
 5. A network timeout after commit followed by retry does not duplicate invoice, voucher, stock movement, or cash/bank movement.
 6. A stale device cannot overwrite a newer company revision using the legacy snapshot endpoint.
-7. An unpaired/unauthorized device cannot write, even if it knows the public publishable key.
+7. An unpaired/revoked device cannot write, even if it knows the public publishable key.

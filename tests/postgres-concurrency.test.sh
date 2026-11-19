@@ -21,7 +21,7 @@ seed="$(psql "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c "
     'glass_main_company_state', NULL,
     '{\"vouchers\":[],\"marker\":\"seed\"}'::jsonb,
     '[]'::jsonb, '{}'::jsonb, 'concurrency-seed-op',
-    'mehran', 'device-mehran', 1, 'state_snapshot', 'seed', clock_timestamp()
+    'mehran', 'seed-device', 1, 'state_snapshot', 'seed', clock_timestamp()
   );")"
 echo "Seed result: $seed"
 baseline="$(psql "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT updated_at::text FROM public.glass_sync WHERE id='glass_main_company_state';")"
@@ -87,4 +87,28 @@ counts_after_replay="$(psql "$DATABASE_URL" -X -qAt -F ':' -v ON_ERROR_STOP=1 -c
   FROM public.glass_sync s WHERE s.id='glass_main_company_state';")"
 [[ "$counts_after_replay" == "2:2:2" ]] || { echo "Replay duplicated a committed operation: $counts_after_replay" >&2; exit 1; }
 
-echo "PASS: concurrent CAS, single winner, conflict preservation, idempotent replay, and atomic audit counts."
+# Reusing the winning device sequence with a different operation ID must fail
+# without leaving behind a changed snapshot, journal row, or audit row.
+if psql "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c "
+  SELECT public.glass_apply_state_operation(
+    'glass_main_company_state', (SELECT updated_at FROM public.glass_sync WHERE id='glass_main_company_state'),
+    jsonb_build_object('vouchers','[]'::jsonb,'marker','must-rollback'),
+    '[]'::jsonb, '{}'::jsonb, 'duplicate-sequence-op',
+    '$winner_actor', '$winner_device', 1, 'state_snapshot', 'duplicate sequence', clock_timestamp()
+  );" >/tmp/glass-duplicate-sequence-result.json 2>/tmp/glass-duplicate-sequence-error.log; then
+  echo "Expected duplicate device sequence to be rejected." >&2
+  exit 1
+fi
+
+counts_after_duplicate="$(psql "$DATABASE_URL" -X -qAt -F ':' -v ON_ERROR_STOP=1 -c "
+  SELECT s.revision,
+         (SELECT count(*) FROM private.glass_operations WHERE company_id='glass_main_company_state'),
+         (SELECT count(*) FROM private.glass_operation_log WHERE company_id='glass_main_company_state'),
+         s.data->>'marker'
+  FROM public.glass_sync s WHERE s.id='glass_main_company_state';")"
+[[ "$counts_after_duplicate" == "2:2:2:$winner_marker" ]] || {
+  echo "Duplicate sequence failure was not atomic: $counts_after_duplicate" >&2
+  exit 1
+}
+
+echo "PASS: concurrent CAS, single winner, conflict preservation, idempotent replay, duplicate-sequence rejection, and atomic audit counts."

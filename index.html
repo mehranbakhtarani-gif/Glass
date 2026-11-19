@@ -1307,6 +1307,7 @@
               <button onclick="setAccTab('trial')" id="acc-tab-trial" class="acc-nav touch-btn px-3 rounded-xl font-bold bg-slate-100 text-slate-700">⚖️ تراز آزمایشی</button>
               <button onclick="setAccTab('pnl')" id="acc-tab-pnl" class="acc-nav touch-btn px-3 rounded-xl font-bold bg-slate-100 text-slate-700">📈 سود و زیان</button>
               <button onclick="setAccTab('bs')" id="acc-tab-bs" class="acc-nav touch-btn px-3 rounded-xl font-bold bg-slate-100 text-slate-700">🏛️ ترازنامه</button>
+              <button onclick="setAccTab('periods')" id="acc-tab-periods" class="acc-nav touch-btn px-3 rounded-xl font-bold bg-slate-100 text-slate-700">🗓️ دوره‌های مالی</button>
               <button onclick="setAccTab('yearend')" id="acc-tab-yearend" class="acc-nav touch-btn px-3 rounded-xl font-bold bg-slate-100 text-slate-700">🔒 بستن سال مالی</button>
             </div>
           </div>
@@ -2573,6 +2574,7 @@
         fixedAssets: [],
         depreciationEntries: [],
         vouchers: [],
+        fiscalPeriods: [],
         accountCatalog: [],
         approvals: [],
         auditLogs: []
@@ -2938,7 +2940,7 @@
       saveState(); renderAll();
       showToast(`واحد نمایش مبالغ به «${state.currency === 'IRR' ? 'ریال' : 'تومان'}» تغییر کرد.`);
     }
-    function changeFiscalYear(yr) { state.fiscalYear = yr; addAudit(`تغییر سال مالی به ${yr}`); saveState(); }
+    function changeFiscalYear(yr) { state.fiscalYear = yr; ensureFiscalPeriods(yr); addAudit(`تغییر سال مالی به ${yr}`); saveState(); }
     function changeUserRole(r) {
       const assignedActor = localStorage.getItem(DEVICE_ACTOR_LOCK_KEY);
       if (isDeviceActorLocked()) {
@@ -3474,6 +3476,95 @@
       return null;
     }
 
+    // دوره‌های مالی شمسی؛ وضعیت هر دوره در state ذخیره و در ممیزی ثبت می‌شود.
+    const JALALI_PERIOD_NAMES = ['فروردین','اردیبهشت','خرداد','تیر','مرداد','شهریور','مهر','آبان','آذر','دی','بهمن','اسفند'];
+    function ensureFiscalPeriods(year = state.fiscalYear) {
+      const fiscalYear = String(year || '').trim();
+      if (!/^14\d{2}$/.test(fiscalYear)) throw new Error('سال مالی برای ساخت دوره‌ها معتبر نیست.');
+      if (!Array.isArray(state.fiscalPeriods)) state.fiscalPeriods = [];
+      const existingMonths = new Set(state.fiscalPeriods.filter(p => String(p.fiscalYear) === fiscalYear).map(p => Number(p.month)));
+      for (let month = 1; month <= 12; month++) {
+        if (existingMonths.has(month)) continue;
+        const startDate = fiscalYear + '/' + String(month).padStart(2, '0') + '/01';
+        const lastDay = month <= 6 ? 31 : (month <= 11 ? 30 : (jalaliDateOrdinal(fiscalYear + '/12/30') !== null ? 30 : 29));
+        const endDate = fiscalYear + '/' + String(month).padStart(2, '0') + '/' + String(lastDay).padStart(2, '0');
+        state.fiscalPeriods.push({
+          id: fiscalYear + '-' + String(month).padStart(2, '0'),
+          fiscalYear, month, title: JALALI_PERIOD_NAMES[month - 1],
+          startDate, endDate, status: 'open', closedAt: null, closedBy: null
+        });
+      }
+      state.fiscalPeriods.sort((a,b) => String(a.startDate).localeCompare(String(b.startDate)));
+      return state.fiscalPeriods.filter(p => String(p.fiscalYear) === fiscalYear);
+    }
+
+    function findFiscalPeriodForDate(date) {
+      const ordinal = jalaliDateOrdinal(date);
+      if (ordinal === null) return null;
+      const yearText = String(date || '').trim().replace(/-/g, '/').replace(/[۰-۹٠-٩]/g, ch => {
+        const fa = '۰۱۲۳۴۵۶۷۸۹', ar = '٠١٢٣٤٥٦٧٨٩';
+        const fi = fa.indexOf(ch); return String(fi >= 0 ? fi : ar.indexOf(ch));
+      }).split('/')[0];
+      if (/^14\d{2}$/.test(yearText)) ensureFiscalPeriods(yearText);
+      return (state.fiscalPeriods || []).find(p => {
+        const start = jalaliDateOrdinal(p.startDate), end = jalaliDateOrdinal(p.endDate);
+        return start !== null && end !== null && ordinal >= start && ordinal <= end;
+      }) || null;
+    }
+
+    function setFiscalPeriodStatus(periodId, nextStatus) {
+      const period = (state.fiscalPeriods || []).find(p => String(p.id) === String(periodId));
+      if (!period || !['open','closed'].includes(nextStatus)) { showToast('دوره مالی انتخاب‌شده معتبر نیست.','error'); return; }
+      const yearClosed = (state.vouchers || []).some(v => v.sourceType === 'fiscal_year_close' && String(v.sourceId) === String(period.fiscalYear));
+      if (yearClosed) { showToast('سال مالی مختومه است؛ وضعیت دوره‌های آن قابل تغییر نیست.','error'); return; }
+      if (nextStatus === 'closed') {
+        const today = getTodayJalaliDate();
+        if (jalaliDateOrdinal(today) === null || jalaliDateOrdinal(today) < jalaliDateOrdinal(period.endDate)) {
+          showToast('بستن دوره پیش از پایان تاریخ آن مجاز نیست.','error'); return;
+        }
+        const invalidVoucher = (state.vouchers || []).find(v => {
+          const rawDate = v.date || v.operationDate;
+          const ordinal = jalaliDateOrdinal(rawDate);
+          if (ordinal === null) return false;
+          if (ordinal < jalaliDateOrdinal(period.startDate) || ordinal > jalaliDateOrdinal(period.endDate)) return false;
+          const check = inspectTrialBalanceVoucher(v);
+          return check.invalidLines || check.invalidStructure || check.unbalanced;
+        });
+        if (invalidVoucher) { showToast('دوره بسته نشد؛ سند #' + invalidVoucher.id + ' نامعتبر یا نامتوازن است.','error'); return; }
+        period.status = 'closed';
+        period.closedAt = today;
+        period.closedBy = String(state.activeRole || 'unknown');
+        addAudit('بستن دوره مالی ' + period.fiscalYear + '/' + String(period.month).padStart(2,'0'));
+      } else {
+        if (!window.confirm('بازکردن دوره مالی ' + period.title + ' ' + period.fiscalYear + '؟ ثبت این تغییر در گزارش حسابرسی انجام می‌شود.')) return;
+        period.status = 'open';
+        period.reopenedAt = getTodayJalaliDate();
+        period.reopenedBy = String(state.activeRole || 'unknown');
+        addAudit('بازکردن مجدد دوره مالی ' + period.fiscalYear + '/' + String(period.month).padStart(2,'0'));
+      }
+      saveState();
+      renderAccountingModule();
+      showToast(nextStatus === 'closed' ? 'دوره مالی بسته شد.' : 'دوره مالی با ثبت ردپای حسابرسی باز شد.');
+    }
+
+    function renderFiscalPeriodsModule() {
+      const box = document.getElementById('accounting-panel-body');
+      const year = String(state.fiscalYear || '1405');
+      const periods = ensureFiscalPeriods(year);
+      const todayOrdinal = jalaliDateOrdinal(getTodayJalaliDate());
+      const rows = periods.map(period => {
+        const closed = period.status === 'closed';
+        const canClose = todayOrdinal !== null && todayOrdinal >= jalaliDateOrdinal(period.endDate);
+        const button = closed
+          ? `<button onclick="setFiscalPeriodStatus('${period.id}','open')" class="touch-btn px-3 py-1.5 rounded-lg bg-amber-100 text-amber-900 font-bold">بازگشایی با ثبت سابقه</button>`
+          : `<button ${canClose ? '' : 'disabled'} onclick="setFiscalPeriodStatus('${period.id}','closed')" class="touch-btn px-3 py-1.5 rounded-lg font-bold ${canClose ? 'bg-rose-700 text-white' : 'bg-slate-100 text-slate-400'}">بستن دوره</button>`;
+        const status = closed ? '<span class="text-rose-700 font-bold">بسته</span>' : '<span class="text-emerald-700 font-bold">باز</span>';
+        const audit = closed ? '<div class="text-[10px] text-slate-500">بسته‌شده در ' + escapeLedgerText(period.closedAt || '—') + ' توسط ' + escapeLedgerText(period.closedBy || '—') + '</div>' : '';
+        return '<div class="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl border bg-white"><div><strong>' + escapeLedgerText(period.title) + ' ' + faNum(period.fiscalYear) + '</strong><div class="text-[11px] text-slate-500 tabular-nums">' + faNum(period.startDate) + ' تا ' + faNum(period.endDate) + '</div>' + audit + '</div><div class="flex items-center gap-3">' + status + button + '</div></div>';
+      }).join('');
+      box.innerHTML = '<div class="bg-white rounded-2xl p-4 border space-y-3"><div class="flex flex-wrap justify-between gap-2"><div><h3 class="font-black text-sm">کنترل دوره‌های مالی سال ' + faNum(year) + '</h3><p class="text-[11px] text-slate-500">هر دوره ماهانه جداگانه قفل می‌شود. ثبت سند در دوره بسته مسدود است؛ بازگشایی فقط با تأیید و ثبت ردپای حسابرسی انجام می‌شود.</p></div><span class="text-xs text-slate-500">' + faNum(periods.filter(p => p.status === 'closed').length) + ' از ۱۲ دوره بسته</span></div><div class="space-y-2">' + rows + '</div><p class="text-[10px] text-amber-800 bg-amber-50 rounded-lg p-2">دوره فقط پس از پایان تاریخ آن قابل بستن است. پیش از بستن، اسناد نامعتبر یا نامتوازن همان دوره کنترل می‌شوند.</p></div>';
+    }
+
     function validateVoucherPosting(lines, date, source = null) {
       if (!Array.isArray(lines) || lines.length < 2) throw new Error('سند نامعتبر است: حداقل دو ردیف لازم است.');
       const catalog = Array.isArray(state.accountCatalog) ? state.accountCatalog : [];
@@ -3485,6 +3576,15 @@
       const dateOrdinal = typeof jalaliDateOrdinal === 'function' ? jalaliDateOrdinal(date) : null;
       if (dateOrdinal === null) throw new Error('تاریخ سند معتبر نیست؛ تاریخ شمسی واقعی وارد کنید.');
 
+      const postingYearMatch = String(date || '').trim().replace(/-/g, '/').replace(/[۰-۹٠-٩]/g, ch => {
+        const fa = '۰۱۲۳۴۵۶۷۸۹', ar = '٠١٢٣٤٥٦٧٨٩';
+        const fi = fa.indexOf(ch); return String(fi >= 0 ? fi : ar.indexOf(ch));
+      }).split('/')[0];
+      if (/^14\d{2}$/.test(postingYearMatch)) ensureFiscalPeriods(postingYearMatch);
+      const matchedFiscalPeriod = findFiscalPeriodForDate(date);
+      if (matchedFiscalPeriod && matchedFiscalPeriod.status === 'closed' && source?.type !== 'fiscal_year_close') {
+        throw new Error('دوره مالی ' + matchedFiscalPeriod.title + ' ' + matchedFiscalPeriod.fiscalYear + ' بسته است؛ ثبت سند مجاز نیست.');
+      }
       const periods = Array.isArray(state.fiscalPeriods) ? state.fiscalPeriods
         : (Array.isArray(state.financialPeriods) ? state.financialPeriods : []);
       if (periods.length) {
@@ -8140,6 +8240,9 @@
 
       const balances = new Map();
       const warnings = [];
+      const fiscalPeriods = ensureFiscalPeriods(fiscalYear);
+      const openPeriods = fiscalPeriods.filter(period => period.status !== 'closed');
+      if (openPeriods.length) warnings.push('برای بستن سال مالی، ابتدا همه ۱۲ دوره را ببندید؛ ' + openPeriods.length + ' دوره هنوز باز است.');
       (state.vouchers || []).forEach(voucher => {
         const rawDate = voucher.date || voucher.operationDate;
         const dateKey = normalizeLedgerDate(rawDate);
@@ -8215,7 +8318,9 @@
     function renderAccountingModule() {
       const box = document.getElementById('accounting-panel-body');
       const bal = getAccountBalances();
-      if (activeAccTab === 'yearend') {
+      if (activeAccTab === 'periods') {
+        renderFiscalPeriodsModule();
+      } else if (activeAccTab === 'yearend') {
         renderFiscalYearCloseModule();
       } else if (activeAccTab === 'chart') {
         const rows = (state.accountCatalog || []).slice().sort((a, b) => a.code.localeCompare(b.code)).map(a => {

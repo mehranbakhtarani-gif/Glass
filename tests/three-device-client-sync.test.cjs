@@ -97,7 +97,6 @@ test('three isolated device clients preserve CAS conflicts and pending local ope
       const page = await context.newPage();
       const pageErrors = [];
       page.on('pageerror', error => pageErrors.push(error.message));
-      await page.route('https://bdbckuwsilncbvqsknub.supabase.co/**', route => route.continue());
       await page.goto(baseUrl + '/', { waitUntil: 'domcontentloaded', timeout: 45000 });
       await page.waitForFunction(() =>
         typeof saveState === 'function' &&

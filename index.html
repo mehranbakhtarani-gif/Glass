@@ -2577,7 +2577,12 @@
 
     async function pushOperationJournalToSupabase() {
       const operations = await listPendingOperations(100);
-      if (!operations.length) return { supported: true, applied: 0, pendingOperationIds: [] };
+      if (!operations.length) {
+        if (localStorage.getItem(CLOUD_OUTBOX_KEY)) {
+          throw new Error('صف همگام‌سازی وجود دارد اما رکورد متناظر در دفتر عملیات محلی پیدا نشد؛ برای جلوگیری از ارسال ناقص، همگام‌سازی متوقف شد.');
+        }
+        return { supported: true, applied: 0, pendingOperationIds: [] };
+      }
       let expectedUpdatedAt = localStorage.getItem(CLOUD_BASELINE_KEY) || null;
       let applied = 0;
       for (const operation of operations) {

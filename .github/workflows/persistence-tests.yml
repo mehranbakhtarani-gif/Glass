@@ -16,7 +16,7 @@ jobs:
           node-version: 22
       - run: node --test tests/indexeddb-persistence.test.cjs
   chromium-indexeddb-fault-injection:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

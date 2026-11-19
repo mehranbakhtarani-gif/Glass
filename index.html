@@ -2144,7 +2144,8 @@
         if (labelEl) labelEl.textContent = 'دستگاه امن متصل شد: ' + result.device.label;
         showToast('این دستگاه با هویت ' + (actor === 'ehsan' ? 'احسان' : 'مهران') + ' به سرور Glass متصل شد.');
         await renderDeviceIdentityStatus();
-        await pullFromSupabase(false);
+        showToast('جفت‌سازی ذخیره شد؛ برنامه برای تثبیت شناسه سروری دستگاه دوباره بارگذاری می‌شود.');
+        window.location.reload();
         return true;
       } catch (error) {
         showToast(error.message || 'جفت‌سازی دستگاه ناموفق بود.', 'error');
@@ -3519,21 +3520,17 @@
       add('ذخیره‌سازی محلی مرورگر', storageOk, storageOk ? 'خواندن و نوشتن localStorage موفق' : 'مرورگر اجازه خواندن/نوشتن localStorage نمی‌دهد');
 
       let cloudOk = false;
-      let cloudDetail = 'تنظیمات URL یا کلید Supabase ناقص است';
-      if (cloudConfig.url && cloudConfig.key && cloudConfig.table && cloudConfig.recordId) {
+      let cloudDetail = 'ابتدا این دستگاه را جفت‌سازی کنید';
+      if (cloudConfig.url && cloudConfig.key && getDeviceToken()) {
         try {
-          const endpoint = cloudConfig.url.replace(/\/$/, '') + '/rest/v1/' + encodeURIComponent(cloudConfig.table) + '?id=eq.' + encodeURIComponent(cloudConfig.recordId) + '&select=id';
-          const response = await fetchWithTimeout(endpoint, {
-            method: 'GET',
-            headers: { apikey: cloudConfig.key, Authorization: 'Bearer ' + cloudConfig.key }
-          });
-          cloudOk = response.ok;
-          cloudDetail = response.ok ? 'پاسخ HTTP ' + response.status + ' از جدول ' + cloudConfig.table : 'خطای HTTP ' + response.status;
+          const response = await gatewayRequest('read', {}, true);
+          cloudOk = true;
+          cloudDetail = response.snapshot ? 'دروازه امن پاسخ داد؛ نسخه شرکت موجود است.' : 'دروازه امن پاسخ داد؛ هنوز snapshot شرکت ثبت نشده است.';
         } catch (e) {
-          cloudDetail = 'خطای ارتباط: ' + (e && e.message ? e.message : 'نامشخص');
+          cloudDetail = 'خطای دروازه: ' + (e && e.message ? e.message : 'نامشخص');
         }
       }
-      add('اتصال واقعی Supabase', cloudOk, cloudDetail);
+      add('اتصال امن به Supabase', cloudOk, cloudDetail);
 
       const passed = results.filter(x => x.ok).length;
       const failed = results.length - passed;

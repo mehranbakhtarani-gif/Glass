@@ -3556,8 +3556,8 @@
         const closed = period.status === 'closed';
         const canClose = todayOrdinal !== null && todayOrdinal >= jalaliDateOrdinal(period.endDate);
         const button = closed
-          ? '<button onclick="setFiscalPeriodStatus(\\'' + period.id + '\\',\\'open\\')" class="touch-btn px-3 py-1.5 rounded-lg bg-amber-100 text-amber-900 font-bold">بازگشایی با ثبت سابقه</button>'
-          : '<button ' + (canClose ? '' : 'disabled') + ' onclick="setFiscalPeriodStatus(\\'' + period.id + '\\',\\'closed\\')" class="touch-btn px-3 py-1.5 rounded-lg font-bold ' + (canClose ? 'bg-rose-700 text-white' : 'bg-slate-100 text-slate-400') + '">بستن دوره</button>';
+          ? `<button onclick="setFiscalPeriodStatus('${period.id}','open')" class="touch-btn px-3 py-1.5 rounded-lg bg-amber-100 text-amber-900 font-bold">بازگشایی با ثبت سابقه</button>`
+          : `<button ${canClose ? '' : 'disabled'} onclick="setFiscalPeriodStatus('${period.id}','closed')" class="touch-btn px-3 py-1.5 rounded-lg font-bold ${canClose ? 'bg-rose-700 text-white' : 'bg-slate-100 text-slate-400'}">بستن دوره</button>`;
         const status = closed ? '<span class="text-rose-700 font-bold">بسته</span>' : '<span class="text-emerald-700 font-bold">باز</span>';
         const audit = closed ? '<div class="text-[10px] text-slate-500">بسته‌شده در ' + escapeLedgerText(period.closedAt || '—') + ' توسط ' + escapeLedgerText(period.closedBy || '—') + '</div>' : '';
         return '<div class="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl border bg-white"><div><strong>' + escapeLedgerText(period.title) + ' ' + faNum(period.fiscalYear) + '</strong><div class="text-[11px] text-slate-500 tabular-nums">' + faNum(period.startDate) + ' تا ' + faNum(period.endDate) + '</div>' + audit + '</div><div class="flex items-center gap-3">' + status + button + '</div></div>';

@@ -2620,6 +2620,126 @@
       return { supported: true, applied, pendingOperationIds: remaining.map(x => x.operationId) };
     }
 
+    async function readLocalMirror() {
+      const db = await openLocalDatabase();
+      try {
+        return await new Promise((resolve, reject) => {
+          const tx = db.transaction(LOCAL_DB_STORE, 'readonly');
+          const request = tx.objectStore(LOCAL_DB_STORE).get(STORE_KEY);
+          request.onsuccess = () => resolve(request.result || null);
+          request.onerror = () => reject(request.error || new Error('خواندن نسخه محلی ناموفق بود.'));
+        });
+      } finally { db.close(); }
+    }
+    async function prepareLocalStorageMirror() {
+      try {
+        const localRaw = localStorage.getItem(STORE_KEY);
+        const mirror = await readLocalMirror();
+        if (!localRaw && mirror && mirror.payload && typeof mirror.payload === 'object') {
+          state = mirror.payload;
+          lastSavedState = JSON.parse(JSON.stringify(state));
+          ensureAuditLogIds(state);
+          localStorage.setItem(STORE_KEY, JSON.stringify(state));
+          localStorage.setItem(LOCAL_UPDATED_KEY, mirror.updatedAt || new Date().toISOString());
+          setCloudBadge('💾 بازیابی از حافظه داخلی گوشی', 'text-emerald-300');
+        } else if (localRaw) {
+          await writeLocalMirror(JSON.parse(localRaw));
+        }
+      } catch (e) {
+        console.warn('Local IndexedDB mirror unavailable:', e);
+        setCloudBadge('⚠️ پشتیبان دوم محلی در دسترس نیست', 'text-amber-300');
+      }
+    }
+    function isValidBackupData(data) {
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+      const requiredArrays = ['products', 'warehouses', 'parties', 'invoices', 'vouchers'];
+      if (!requiredArrays.every(key => Array.isArray(data[key]))) return false;
+      if (!data.settings || typeof data.settings !== 'object' || Array.isArray(data.settings)) return false;
+      return true;
+    }
+
+    let state = (() => {
+      try {
+        const raw = localStorage.getItem(STORE_KEY);
+        if (raw) {
+          // نسخه‌های محلی قدیمی که timestamp ندارند، در اولین اجرا محافظت می‌شوند.
+          if (!localStorage.getItem(LOCAL_UPDATED_KEY)) localStorage.setItem(LOCAL_UPDATED_KEY, new Date().toISOString());
+          return JSON.parse(raw);
+        }
+        return defaultState();
+      } catch (e) { return defaultState(); }
+    })();
+
+    if (!Array.isArray(state.checks)) state.checks = [];
+    if (!Array.isArray(state.guarantees)) state.guarantees = [];
+    if (!Array.isArray(state.payableCommitments)) state.payableCommitments = [];
+    if (!Array.isArray(state.treasuryTxs)) state.treasuryTxs = [];
+    if (!Array.isArray(state.accountCatalog) || !state.accountCatalog.length) state.accountCatalog = buildAccountCatalog();
+    state.accountCatalog.filter(a => a.level === 'subsidiary').forEach(a => { if (!CHART_ACCOUNTS.some(existing => existing.code === a.code)) CHART_ACCOUNTS.push({ code: a.code, name: a.name }); });
+    // Add the supplier-advance account to existing installations without replacing their custom chart.
+    if (!state.accountCatalog.some(a => a.level === 'subsidiary' && a.code === '1107')) state.accountCatalog.push({ id: 'SUB-1107', code: '1107', name: 'پیش‌پرداخت به تأمین‌کنندگان', level: 'subsidiary', parentId: 'GL-11', system: true, active: true });
+    if (!state.accountCatalog.some(a => a.level === 'subsidiary' && a.code === '2106')) state.accountCatalog.push({ id: 'SUB-2106', code: '2106', name: 'بستانکاران هزینه‌های واردات', level: 'subsidiary', parentId: 'GL-21', system: true, active: true });
+    if (!Array.isArray(state.fxCommitments)) state.fxCommitments = [];
+    if (!Array.isArray(state.employees)) state.employees = [];
+    if (!Array.isArray(state.payrollRuns)) state.payrollRuns = [];
+    if (!Array.isArray(state.fixedAssets)) state.fixedAssets = [];
+    if (!Array.isArray(state.depreciationEntries)) state.depreciationEntries = [];
+    if (!state.payrollSettings || typeof state.payrollSettings !== 'object') state.payrollSettings = { employeeInsuranceRate: 7, employerInsuranceRate: 23 };
+    if (!Number.isFinite(Number(state.payrollSettings.employeeInsuranceRate))) state.payrollSettings.employeeInsuranceRate = 7;
+    if (!Number.isFinite(Number(state.payrollSettings.employerInsuranceRate))) state.payrollSettings.employerInsuranceRate = 23;
+    (state.imports || []).forEach(m => {
+      if (!Number(m.carryingRate)) m.carryingRate = Number(m.fxRate || 0);
+      if (!Array.isArray(m.revaluationHistory)) m.revaluationHistory = [];
+    });
+    state.fxCommitments.forEach(c => {
+      if (!Number(c.carryingRate)) c.carryingRate = Number(c.initialRate || 0);
+      if (!Array.isArray(c.revaluationHistory)) c.revaluationHistory = [];
+      if (c.ledgerPosted === undefined) c.ledgerPosted = false;
+      if (!c.offsetAccountCode) c.offsetAccountCode = '1105';
+    });
+    if (!state.fxRates || typeof state.fxRates !== 'object') state.fxRates = { USD: 0, CNY: 0, EUR: 0 };
+    if (!Array.isArray(state.parties)) state.parties = [];
+    state.parties.forEach(p => {
+      if (!p.subledgerId) p.subledgerId = 'PARTY-' + String(p.id || createStableId('party'));
+      if (!p.ledgerAccountCode) p.ledgerAccountCode = String(p.role || '').includes('تأمین') ? '2101' : '1103';
+      if (!p.accountingStatus) p.accountingStatus = 'active';
+    });
+
+    // سازگاری با نقش‌های نسخه‌های قبلی؛ مدیرعامل به مهران و سایر نقش‌ها به احسان منتقل می‌شوند.
+    const LEGACY_ROLE_MAP = { ceo: 'mehran', accountant: 'ehsan', importer: 'ehsan', warehouse: 'ehsan' };
+    const VALID_USER_ROLES = ['mehran', 'ehsan'];
+    if (!localStorage.getItem(DEVICE_ACTOR_KEY)) {
+      localStorage.setItem(DEVICE_ACTOR_KEY, VALID_USER_ROLES.includes(state.activeRole) ? state.activeRole : 'mehran');
+    }
+    state.activeRole = localStorage.getItem(DEVICE_ACTOR_KEY) === 'ehsan' ? 'ehsan' : 'mehran';
+    if (!VALID_USER_ROLES.includes(state.activeRole)) {
+      state.activeRole = LEGACY_ROLE_MAP[state.activeRole] || 'mehran';
+    }
+
+    const SYNC_ENTITY_COLLECTIONS = [
+      'warehouses', 'products', 'parties', 'invoices', 'orders', 'imports', 'fxCommitments',
+      'bankAccounts', 'checks', 'guarantees', 'payableCommitments', 'treasuryTxs', 'bankReconcileItems',
+      'employees', 'payrollRuns', 'fixedAssets', 'depreciationEntries', 'vouchers', 'accountCatalog', 'approvals', 'auditLogs', 'customUnits'
+    ];
+    let lastSavedState = JSON.parse(JSON.stringify(state));
+    // آخرین رویداد حسابرسی که برای یک عملیات ثبت شده؛ از تکرار خلاصهٔ قدیمی در ذخیره‌های بعدی جلوگیری می‌کند.
+    let lastQueuedAuditId = null;
+
+    function ensureAuditLogIds(target) {
+      if (!Array.isArray(target.auditLogs)) target.auditLogs = [];
+      target.auditLogs.forEach((entry, index) => {
+        if (!entry || typeof entry !== 'object' || entry.id !== undefined && entry.id !== null) return;
+        const seed = [entry.time || '', entry.user || '', entry.action || '', index].join('|');
+        let hash = 2166136261;
+        for (let i = 0; i < seed.length; i++) {
+          hash ^= seed.charCodeAt(i);
+          hash = Math.imul(hash, 16777619);
+        }
+        entry.id = 'audit_' + (hash >>> 0).toString(16) + '_' + index;
+      });
+    }
+    ensureAuditLogIds(state);
+
     function buildEntityChangeSet(previous, current, sequence) {
       const changes = [];
       SYNC_ENTITY_COLLECTIONS.forEach(entityType => {

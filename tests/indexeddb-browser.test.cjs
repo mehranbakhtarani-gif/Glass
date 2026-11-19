@@ -22,6 +22,7 @@ test('real Chromium IndexedDB abort restores the last durable snapshot and block
     let pathname;
     try { pathname = decodeURIComponent(new URL(req.url, 'http://127.0.0.1').pathname); }
     catch { res.writeHead(400).end('Bad request'); return; }
+    if (pathname === '/') pathname = '/index.html';
     const file = path.resolve(root, '.' + pathname);
     if (file !== root && !file.startsWith(root + path.sep)) {
       res.writeHead(403).end('Forbidden'); return;
@@ -68,6 +69,7 @@ test('real Chromium IndexedDB abort restores the last durable snapshot and block
       typeof saveState === 'function' &&
       typeof state === 'object' && !!state.settings &&
       typeof localPersistenceFailed === 'boolean',
+      undefined,
       { timeout: 45000 }
     );
 
@@ -94,7 +96,7 @@ test('real Chromium IndexedDB abort restores the last durable snapshot and block
       if (accepted !== true) throw new Error('Save was not queued before asynchronous IndexedDB failure');
     });
 
-    await page.waitForFunction(() => localPersistenceFailed === true, { timeout: 15000 });
+    await page.waitForFunction(() => localPersistenceFailed === true, undefined, { timeout: 15000 });
 
     const result = await page.evaluate(async () => {
       const mirror = await readLocalMirror();

@@ -3545,6 +3545,99 @@
       return net;
     }
 
+    function inferAccountNormalBalance(code) {
+      const normalized = String(code || '');
+      if (['1202', '3101', '3102', '4101', '4104', '2101', '2102', '2103', '2104', '2105', '2106'].includes(normalized)) return 'credit';
+      if (['4102', '4103'].includes(normalized)) return 'debit';
+      if (/^[156]/.test(normalized)) return 'debit';
+      if (/^[234]/.test(normalized)) return 'credit';
+      return null;
+    }
+
+    function validateVoucherPosting(lines, date, source = null) {
+      if (!Array.isArray(lines) || lines.length < 2) throw new Error('سند نامعتبر است: حداقل دو ردیف لازم است.');
+      const catalog = Array.isArray(state.accountCatalog) ? state.accountCatalog : [];
+      const parties = Array.isArray(state.parties) ? state.parties : [];
+      const bankAccounts = Array.isArray(state.bankAccounts) ? state.bankAccounts : [];
+      const costCenters = Array.isArray(state.costCenters) ? state.costCenters : [];
+      const requiredPartyCodes = new Set(['1103', '1104', '2101', '2102']);
+
+      const dateOrdinal = typeof jalaliDateOrdinal === 'function' ? jalaliDateOrdinal(date) : null;
+      if (dateOrdinal === null) throw new Error('تاریخ سند معتبر نیست؛ تاریخ شمسی واقعی وارد کنید.');
+
+      const periods = Array.isArray(state.fiscalPeriods) ? state.fiscalPeriods
+        : (Array.isArray(state.financialPeriods) ? state.financialPeriods : []);
+      if (periods.length) {
+        const matchingPeriod = periods.find(period => {
+          const start = jalaliDateOrdinal(period.startDate || period.fromDate);
+          const end = jalaliDateOrdinal(period.endDate || period.toDate);
+          return start !== null && end !== null && dateOrdinal >= start && dateOrdinal <= end;
+        });
+        if (!matchingPeriod) throw new Error('تاریخ سند خارج از دوره‌های مالی تعریف‌شده است.');
+        if (matchingPeriod.closed === true || matchingPeriod.isClosed === true || String(matchingPeriod.status || '').toLowerCase() === 'closed') {
+          throw new Error('دوره مالی انتخاب‌شده بسته است؛ ثبت سند مجاز نیست.');
+        }
+      }
+
+      for (const line of lines) {
+        const code = String(line?.code || '').trim();
+        if (!code) throw new Error('ردیف سند فاقد کد حساب است.');
+        const account = catalog.find(item => String(item.code) === code);
+        if (!account || account.level !== 'subsidiary') {
+          throw new Error('حساب ' + code + ' در کدینگ وجود ندارد یا سطح آن معینِ قابل ثبت نیست.');
+        }
+        if (account.active === false) throw new Error('حساب ' + code + ' غیرفعال است و امکان ثبت گردش ندارد.');
+        const normalBalance = account.normalBalance || account.nature || inferAccountNormalBalance(code);
+        if (normalBalance !== null && normalBalance !== undefined && !['debit', 'credit'].includes(String(normalBalance).toLowerCase())) {
+          throw new Error('ماهیت حساب ' + code + ' در اطلاعات کدینگ معتبر نیست.');
+        }
+        const general = catalog.find(item => String(item.id) === String(account.parentId));
+        if (!general || general.level !== 'general' || general.active === false) {
+          throw new Error('حساب کلِ والد برای معین ' + code + ' معتبر یا فعال نیست.');
+        }
+        const group = catalog.find(item => String(item.id) === String(general.parentId));
+        if (!group || group.level !== 'group' || group.active === false) {
+          throw new Error('گروه والد حساب ' + code + ' معتبر یا فعال نیست.');
+        }
+
+        const partyRequired = account.requiresParty === true || requiredPartyCodes.has(code);
+        const partyId = line.partyId === null || line.partyId === undefined || line.partyId === '' ? '' : String(line.partyId);
+        if (partyRequired && !partyId) {
+          throw new Error('برای حساب ' + code + ' انتخاب طرف حساب/تفصیلی الزامی است.');
+        }
+        if (partyId) {
+          const party = parties.find(item => String(item.id) === partyId);
+          if (!party || party.accountingStatus === 'inactive' || party.accountingStatus === 'blocked') {
+            throw new Error('طرف حساب ردیف ' + code + ' وجود ندارد یا از نظر حسابداری غیرفعال است.');
+          }
+          if (partyRequired && !String(party.subledgerId || '').trim()) {
+            throw new Error('کد تفصیلی طرف حساب برای حساب ' + code + ' تعریف نشده است.');
+          }
+        }
+
+        if (account.requiresCostCenter === true) {
+          const costCenterId = String(line.costCenterId || line.costCenter || '');
+          const costCenter = costCenters.find(item => String(item.id) === costCenterId);
+          if (!costCenterId || !costCenter || costCenter.active === false) {
+            throw new Error('برای حساب ' + code + ' مرکز هزینه معتبر و فعال الزامی است.');
+          }
+        }
+        if (account.requiresCurrency === true) {
+          const currency = String(line.currencyCode || line.currency || '').trim().toUpperCase();
+          if (!currency || (currency !== String(state.currency || 'IRR').toUpperCase() && !Object.prototype.hasOwnProperty.call(state.fxRates || {}, currency))) {
+            throw new Error('برای حساب ' + code + ' ارز معتبر الزامی است.');
+          }
+        }
+
+        const bankAccountId = line.bankAccountId || (code === '1102' ? source?.bankAccountId : null);
+        if (account.requiresBankAccount === true || line.bankAccountId) {
+          const bank = bankAccounts.find(item => String(item.id) === String(bankAccountId));
+          if (!bank || bank.active === false) throw new Error('زیرحساب بانکی ردیف ' + code + ' وجود ندارد یا غیرفعال است.');
+        }
+      }
+      return true;
+    }
+
     function postVoucher(desc, lines, date = getTodayJalaliDate(), source = null) {
       const postingDateText = String(date || '').trim().replace(/-/g, '/').replace(/[۰-۹٠-٩]/g, ch => {
         const fa = '۰۱۲۳۴۵۶۷۸۹', ar = '٠١٢٣٤٥٦٧٨٩';
@@ -3555,7 +3648,7 @@
         const closedYear = (state.vouchers || []).find(v => v.sourceType === 'fiscal_year_close' && String(v.sourceId || '') === postingYear);
         if (closedYear) throw new Error('سال مالی ' + closedYear.sourceId + ' بسته شده است؛ ثبت با تاریخ این سال مجاز نیست.');
       }
-      if (!Array.isArray(lines) || lines.length < 2) throw new Error('سند نامعتبر است: حداقل دو ردیف لازم است.');
+      validateVoucherPosting(lines, date, source);
       const invalidLine = lines.some(line => {
         if (!line || !String(line.code || '').trim()) return true;
         const debit = Number(line.debit || 0), credit = Number(line.credit || 0);

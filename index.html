@@ -3545,6 +3545,100 @@
       return net;
     }
 
+    function inferAccountNormalBalance(code) {
+      const normalized = String(code || '');
+      if (['1202', '3101', '3102', '4101', '4104', '2101', '2102', '2103', '2104', '2105', '2106'].includes(normalized)) return 'credit';
+      if (['4102', '4103'].includes(normalized)) return 'debit';
+      if (/^[156]/.test(normalized)) return 'debit';
+      if (/^[234]/.test(normalized)) return 'credit';
+      return null;
+    }
+
+    function validateVoucherPosting(lines, date, source = null) {
+      if (!Array.isArray(lines) || lines.length < 2) throw new Error('سند نامعتبر است: حداقل دو ردیف لازم است.');
+      const catalog = Array.isArray(state.accountCatalog) ? state.accountCatalog : [];
+      const parties = Array.isArray(state.parties) ? state.parties : [];
+      const bankAccounts = Array.isArray(state.bankAccounts) ? state.bankAccounts : [];
+      const costCenters = Array.isArray(state.costCenters) ? state.costCenters : [];
+      const requiredPartyCodes = new Set(['1103', '1104', '2101', '2102']);
+
+      const dateOrdinal = typeof jalaliDateOrdinal === 'function' ? jalaliDateOrdinal(date) : null;
+      if (dateOrdinal === null) throw new Error('تاریخ سند معتبر نیست؛ تاریخ شمسی واقعی وارد کنید.');
+
+      const periods = Array.isArray(state.fiscalPeriods) ? state.fiscalPeriods
+        : (Array.isArray(state.financialPeriods) ? state.financialPeriods : []);
+      if (periods.length) {
+        const matchingPeriod = periods.find(period => {
+          const start = jalaliDateOrdinal(period.startDate || period.fromDate);
+          const end = jalaliDateOrdinal(period.endDate || period.toDate);
+          return start !== null && end !== null && dateOrdinal >= start && dateOrdinal <= end;
+        });
+        if (!matchingPeriod) throw new Error('تاریخ سند خارج از دوره‌های مالی تعریف‌شده است.');
+        if (matchingPeriod.closed === true || matchingPeriod.isClosed === true || String(matchingPeriod.status || '').toLowerCase() === 'closed') {
+          throw new Error('دوره مالی انتخاب‌شده بسته است؛ ثبت سند مجاز نیست.');
+        }
+      }
+
+      for (const line of lines) {
+        const code = String(line?.code || '').trim();
+        if (!code) throw new Error('ردیف سند فاقد کد حساب است.');
+        const matchingAccounts = catalog.filter(item => String(item.code) === code);
+        const account = matchingAccounts[0];
+        if (matchingAccounts.length !== 1 || !account || account.level !== 'subsidiary' || !/^\d{4,8}$/.test(code)) {
+          throw new Error('حساب ' + code + ' در کدینگ یکتا نیست یا سطح آن معینِ قابل ثبت نیست.');
+        }
+        if (account.active === false) throw new Error('حساب ' + code + ' غیرفعال است و امکان ثبت گردش ندارد.');
+        const normalBalance = account.normalBalance || account.nature || inferAccountNormalBalance(code);
+        if (normalBalance !== null && normalBalance !== undefined && !['debit', 'credit'].includes(String(normalBalance).toLowerCase())) {
+          throw new Error('ماهیت حساب ' + code + ' در اطلاعات کدینگ معتبر نیست.');
+        }
+        const general = catalog.find(item => String(item.id) === String(account.parentId));
+        if (!general || general.level !== 'general' || general.active === false || !code.startsWith(String(general.code || ''))) {
+          throw new Error('حساب کلِ والد برای معین ' + code + ' معتبر، هم‌سطح یا فعال نیست.');
+        }
+        const group = catalog.find(item => String(item.id) === String(general.parentId));
+        if (!group || group.level !== 'group' || group.active === false || !String(general.code || '').startsWith(String(group.code || ''))) {
+          throw new Error('گروه والد حساب ' + code + ' معتبر، هم‌سطح یا فعال نیست.');
+        }
+
+        const partyRequired = account.requiresParty === true || requiredPartyCodes.has(code);
+        const partyId = line.partyId === null || line.partyId === undefined || line.partyId === '' ? '' : String(line.partyId);
+        if (partyRequired && !partyId) {
+          throw new Error('برای حساب ' + code + ' انتخاب طرف حساب/تفصیلی الزامی است.');
+        }
+        if (partyId) {
+          const party = parties.find(item => String(item.id) === partyId);
+          if (!party || party.accountingStatus !== 'active') {
+            throw new Error('طرف حساب ردیف ' + code + ' وجود ندارد یا از نظر حسابداری غیرفعال است.');
+          }
+          if (partyRequired && !String(party.subledgerId || '').trim()) {
+            throw new Error('کد تفصیلی طرف حساب برای حساب ' + code + ' تعریف نشده است.');
+          }
+        }
+
+        if (account.requiresCostCenter === true) {
+          const costCenterId = String(line.costCenterId || line.costCenter || '');
+          const costCenter = costCenters.find(item => String(item.id) === costCenterId);
+          if (!costCenterId || !costCenter || costCenter.active === false) {
+            throw new Error('برای حساب ' + code + ' مرکز هزینه معتبر و فعال الزامی است.');
+          }
+        }
+        if (account.requiresCurrency === true) {
+          const currency = String(line.currencyCode || line.currency || '').trim().toUpperCase();
+          if (!currency || (currency !== String(state.currency || 'IRR').toUpperCase() && !Object.prototype.hasOwnProperty.call(state.fxRates || {}, currency))) {
+            throw new Error('برای حساب ' + code + ' ارز معتبر الزامی است.');
+          }
+        }
+
+        const bankAccountId = line.bankAccountId || (code === '1102' ? source?.bankAccountId : null);
+        if (account.requiresBankAccount === true || line.bankAccountId) {
+          const bank = bankAccounts.find(item => String(item.id) === String(bankAccountId));
+          if (!bank || bank.active === false) throw new Error('زیرحساب بانکی ردیف ' + code + ' وجود ندارد یا غیرفعال است.');
+        }
+      }
+      return true;
+    }
+
     function postVoucher(desc, lines, date = getTodayJalaliDate(), source = null) {
       const postingDateText = String(date || '').trim().replace(/-/g, '/').replace(/[۰-۹٠-٩]/g, ch => {
         const fa = '۰۱۲۳۴۵۶۷۸۹', ar = '٠١٢٣٤٥٦٧٨٩';
@@ -3555,7 +3649,7 @@
         const closedYear = (state.vouchers || []).find(v => v.sourceType === 'fiscal_year_close' && String(v.sourceId || '') === postingYear);
         if (closedYear) throw new Error('سال مالی ' + closedYear.sourceId + ' بسته شده است؛ ثبت با تاریخ این سال مجاز نیست.');
       }
-      if (!Array.isArray(lines) || lines.length < 2) throw new Error('سند نامعتبر است: حداقل دو ردیف لازم است.');
+      validateVoucherPosting(lines, date, source);
       const invalidLine = lines.some(line => {
         if (!line || !String(line.code || '').trim()) return true;
         const debit = Number(line.debit || 0), credit = Number(line.credit || 0);
@@ -4206,9 +4300,22 @@
       return batch;
     }
 
-    function consumeFifoStock(product, quantity) {
+    function consumeFifoStock(product, quantity, warehouseId = product?.warehouseId) {
       const qty = Number(quantity || 0);
       if (!product || !Number.isFinite(qty) || qty <= 0) throw new Error('مقدار خروج موجودی معتبر نیست.');
+      const productWarehouseId = product.warehouseId === null || product.warehouseId === undefined ? '' : String(product.warehouseId);
+      const knownBatchWarehouses = [...new Set((Array.isArray(product.batches) ? product.batches : [])
+        .map(batch => batch?.warehouseId).filter(value => value !== null && value !== undefined && value !== '').map(String))];
+      const inferredWarehouseId = productWarehouseId || (knownBatchWarehouses.length === 1 ? knownBatchWarehouses[0] : '');
+      const requestedWarehouseId = warehouseId === null || warehouseId === undefined
+        ? (inferredWarehouseId || ((state.warehouses || []).length === 1 ? String(state.warehouses[0].id) : ''))
+        : String(warehouseId);
+      if (!requestedWarehouseId && (state.warehouses || []).length > 1) {
+        throw new Error('انبار این کالا مشخص نیست؛ برای جلوگیری از خروج از انبار اشتباه، ابتدا انبار کالا را تعیین کنید.');
+      }
+      if (requestedWarehouseId && productWarehouseId && requestedWarehouseId !== productWarehouseId) {
+        throw new Error('انبار فاکتور با انبار اختصاص‌یافته به کالا یکسان نیست.');
+      }
       const reconciliation = inspectProductBatchReconciliation(product);
       if (Number.isFinite(Number(product.stock)) && reconciliation.tracked > Number(product.stock) + 0.000001) {
         throw new Error('جمع بچ‌ها از موجودی کل بیشتر است؛ ابتدا مغایرت‌گیری بچ و کاردکس انجام شود.');
@@ -4217,12 +4324,15 @@
       const todayOrdinal = typeof currentJalaliOrdinal === 'function' ? currentJalaliOrdinal() : null;
       const eligible = batches.filter(batch => {
         if (Number(batch.remainingQty || 0) <= 0) return false;
+        const batchWarehouseId = batch.warehouseId === null || batch.warehouseId === undefined || batch.warehouseId === ''
+          ? productWarehouseId : String(batch.warehouseId);
+        if (requestedWarehouseId && batchWarehouseId !== requestedWarehouseId) return false;
         if (!batch.expiryDate || todayOrdinal === null || typeof jalaliDateOrdinal !== 'function') return true;
         const expiryOrdinal = jalaliDateOrdinal(batch.expiryDate);
         return expiryOrdinal === null || expiryOrdinal >= todayOrdinal;
       });
       const available = eligible.reduce((sum, b) => sum + Math.max(0, Number(b.remainingQty || 0)), 0);
-      if (available + 0.000001 < qty) throw new Error('موجودی بچ‌های غیرمنقضی برای خروج FIFO کافی نیست.');
+      if (available + 0.000001 < qty) throw new Error('موجودی بچ‌های غیرمنقضی در انبار انتخاب‌شده برای خروج FIFO کافی نیست.');
       const ordered = eligible.sort((a, b) => {
         const ad = String(a.receivedDate || '9999/99/99');
         const bd = String(b.receivedDate || '9999/99/99');
@@ -4236,16 +4346,33 @@
         const take = Math.min(remaining, Number(batch.remainingQty || 0));
         batch.remainingQty = Math.max(0, Number(batch.remainingQty || 0) - take);
         totalCost += take * Number(batch.unitCost || 0);
-        allocations.push({ batchId: batch.id, lot: batch.lot, quantity: take, unitCost: Number(batch.unitCost || 0), expiryDate: batch.expiryDate || '' });
+        allocations.push({
+          batchId: batch.id, lot: batch.lot, quantity: take,
+          unitCost: Number(batch.unitCost || 0), expiryDate: batch.expiryDate || '',
+          warehouseId: batch.warehouseId ?? (requestedWarehouseId || productWarehouseId || null)
+        });
         remaining -= take;
       }
       return { totalCost: Math.round(totalCost), unitCost: totalCost / qty, allocations };
     }
 
-    function restoreFifoAllocations(product, allocations, quantityToRestore, fallbackCost, sourceRef, alreadyRestored = []) {
+    function restoreFifoAllocations(product, allocations, quantityToRestore, fallbackCost, sourceRef, alreadyRestored = [], warehouseId = product?.warehouseId) {
       const qty = Number(quantityToRestore), safeFallbackCost = Number(fallbackCost);
       if (!product || !Number.isFinite(qty) || qty <= 0) throw new Error('مقدار برگشتی برای بازیابی بچ معتبر نیست.');
       if (!Number.isFinite(safeFallbackCost) || safeFallbackCost < 0) throw new Error('بهای جایگزین بچ برگشتی معتبر نیست.');
+      const productWarehouseId = product.warehouseId === null || product.warehouseId === undefined ? '' : String(product.warehouseId);
+      const knownBatchWarehouses = [...new Set((Array.isArray(product.batches) ? product.batches : [])
+        .map(batch => batch?.warehouseId).filter(value => value !== null && value !== undefined && value !== '').map(String))];
+      const inferredWarehouseId = productWarehouseId || (knownBatchWarehouses.length === 1 ? knownBatchWarehouses[0] : '');
+      const requestedWarehouseId = warehouseId === null || warehouseId === undefined
+        ? (inferredWarehouseId || ((state.warehouses || []).length === 1 ? String(state.warehouses[0].id) : ''))
+        : String(warehouseId);
+      if (!requestedWarehouseId && (state.warehouses || []).length > 1) {
+        throw new Error('انبار کالای برگشتی مشخص نیست؛ بازیابی بچ متوقف شد.');
+      }
+      if (requestedWarehouseId && productWarehouseId && requestedWarehouseId !== productWarehouseId) {
+        throw new Error('انبار برگشت با انبار اختصاص‌یافته به کالا یکسان نیست.');
+      }
       const batches = Array.isArray(product.batches) ? product.batches : (product.batches = []);
       const restored = [];
       if (Array.isArray(allocations) && allocations.length) {
@@ -4254,9 +4381,12 @@
         for (const allocation of allocations) {
           const batchId = String(allocation?.batchId ?? '');
           const allocatedQty = Number(allocation?.quantity), unitCost = Number(allocation?.unitCost);
+          const allocationWarehouseId = allocation?.warehouseId === null || allocation?.warehouseId === undefined
+            ? (requestedWarehouseId || productWarehouseId) : String(allocation.warehouseId);
           if (!batchId || seenBatchIds.has(batchId) || !Number.isFinite(allocatedQty) ||
-              allocatedQty <= 0 || !Number.isFinite(unitCost) || unitCost < 0) {
-            throw new Error('اطلاعات تخصیص بچ برای برگشت نامعتبر است.');
+              allocatedQty <= 0 || !Number.isFinite(unitCost) || unitCost < 0 ||
+              (requestedWarehouseId && allocationWarehouseId !== requestedWarehouseId)) {
+            throw new Error('اطلاعات تخصیص بچ یا انبار برای برگشت نامعتبر است.');
           }
           seenBatchIds.add(batchId);
           if (remaining <= 0.000001) continue;
@@ -4270,19 +4400,35 @@
           if (take <= 0) continue;
           const batch = batches.find(b => String(b.id) === batchId);
           if (batch) {
+            const batchWarehouseId = batch.warehouseId === null || batch.warehouseId === undefined
+              ? productWarehouseId : String(batch.warehouseId);
+            if (requestedWarehouseId && batchWarehouseId !== requestedWarehouseId) {
+              throw new Error('بچ مقصد برگشت متعلق به انبار فاکتور نیست.');
+            }
             const currentRemaining = Number(batch.remainingQty ?? 0);
             if (!Number.isFinite(currentRemaining) || currentRemaining < 0) throw new Error('موجودی باقی‌مانده بچ نامعتبر است.');
             batch.remainingQty = currentRemaining + take;
-          } else batches.push({ id: allocation.batchId, lot: allocation.lot, receivedDate: '', productionDate: '', expiryDate: allocation.expiryDate || '', quantity: take, remainingQty: take, unitCost, sourceType: 'sales_return', sourceRef });
-          restored.push({ batchId: allocation.batchId, quantity: take });
+          } else {
+            batches.push({
+              id: allocation.batchId, lot: allocation.lot, receivedDate: '', productionDate: '',
+              expiryDate: allocation.expiryDate || '', quantity: take, remainingQty: take, unitCost,
+              sourceType: 'sales_return', sourceRef, warehouseId: allocationWarehouseId || null
+            });
+          }
+          restored.push({ batchId: allocation.batchId, quantity: take, warehouseId: allocationWarehouseId || null });
           remaining -= take;
         }
         if (remaining > 0.000001) throw new Error('مقدار برگشتی با تخصیص بچ فاکتور سازگار نیست.');
         return restored;
       }
-      const fallbackBatch = { id: 'RETURN-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7), lot: 'RETURN-' + sourceRef, receivedDate: getTodayJalaliDate(), productionDate: '', expiryDate: '', quantity: qty, remainingQty: qty, unitCost: safeFallbackCost, sourceType: 'sales_return', sourceRef, warehouseId: product.warehouseId || null };
+      const fallbackBatch = {
+        id: 'RETURN-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+        lot: 'RETURN-' + sourceRef, receivedDate: getTodayJalaliDate(), productionDate: '',
+        expiryDate: '', quantity: qty, remainingQty: qty, unitCost: safeFallbackCost,
+        sourceType: 'sales_return', sourceRef, warehouseId: requestedWarehouseId || productWarehouseId || null
+      };
       batches.push(fallbackBatch);
-      return [{ batchId: fallbackBatch.id, quantity: qty }];
+      return [{ batchId: fallbackBatch.id, quantity: qty, warehouseId: fallbackBatch.warehouseId }];
     }
 
     // =========================================================================
@@ -4467,9 +4613,9 @@
       const p = state.products.find(x => x.id === document.getElementById('tr-prod').value);
       const destWh = document.getElementById('tr-dest-wh').value;
       const qty = Number(document.getElementById('tr-qty').value);
-      const sourceWh = p?.warehouseId;
+      const sourceWh = resolveProductWarehouseId(p);
       const sourceStock = Number(p?.stock);
-      if (!p || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(sourceStock) || qty > sourceStock) {
+      if (!p || !sourceWh || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(sourceStock) || qty > sourceStock) {
         showToast('مقدار انتقال یا موجودی مبدأ معتبر نیست.', 'error'); return;
       }
       if (!destWh || !state.warehouses.some(w => w.id === destWh)) {
@@ -4495,7 +4641,7 @@
       if (state.costingMethod === 'FIFO') {
         try {
           sourceSimulation = JSON.parse(JSON.stringify(p));
-          fifoPlan = consumeFifoStock(sourceSimulation, qty);
+          fifoPlan = consumeFifoStock(sourceSimulation, qty, sourceWh);
           const allocatedQty = Array.isArray(fifoPlan?.allocations)
             ? fifoPlan.allocations.reduce((sum, item) => sum + Number(item.quantity), 0)
             : NaN;
@@ -4578,13 +4724,24 @@
     }
 
     function submitPhysicalStocktaking() {
+      if (state.costingMethod === 'FIFO') {
+        const unresolvedWarehouseChange = state.products.some(product => {
+          const real = Number(document.getElementById(`st-real-${product.id}`)?.value);
+          return Number.isFinite(real) && Math.abs(real - Number(product.stock || 0)) > 0.000001 &&
+            !resolveProductWarehouseId(product);
+        });
+        if (unresolvedWarehouseChange) {
+          showToast('انبار یک یا چند کالا مشخص نیست؛ برای جلوگیری از اصلاح بچ در انبار اشتباه، ابتدا انبار کالاها را تعیین کنید.', 'error');
+          return;
+        }
+      }
       let changes = 0;
       state.products.forEach(p => {
         const real = Number(document.getElementById(`st-real-${p.id}`).value);
         if (real !== p.stock) {
           const diff = real - p.stock;
-          if (diff > 0 && state.costingMethod === 'FIFO') addStockBatch(p, { lot: 'ADJ-' + Date.now() + '-' + p.id, quantity: diff, unitCost: p.buyPrice, receivedDate: getTodayJalaliDate(), sourceType: 'stocktake', sourceRef: p.id });
-          if (diff < 0 && state.costingMethod === 'FIFO') consumeFifoStock(p, Math.abs(diff));
+          if (diff > 0 && state.costingMethod === 'FIFO') addStockBatch(p, { lot: 'ADJ-' + Date.now() + '-' + p.id, quantity: diff, unitCost: p.buyPrice, receivedDate: getTodayJalaliDate(), sourceType: 'stocktake', sourceRef: p.id, warehouseId: resolveProductWarehouseId(p) });
+          if (diff < 0 && state.costingMethod === 'FIFO') consumeFifoStock(p, Math.abs(diff), resolveProductWarehouseId(p));
           p.stock = real;
           changes++;
           const val = Math.abs(diff) * p.buyPrice;
@@ -4934,7 +5091,9 @@
       document.getElementById('inv-next-no').textContent = faNum(nextNo);
       document.getElementById('inv-party').innerHTML = state.parties.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
       document.getElementById('inv-warehouse').innerHTML = state.warehouses.map(w => `<option value="${w.id}">${w.name}</option>`).join('');
-      document.getElementById('inv-line-prod').innerHTML = state.products.map(p => `<option value="${p.id}">${p.name} (موجود: ${faNum(p.stock)} KG)</option>`).join('');
+      document.getElementById('inv-warehouse').onchange = onInvWarehouseChange;
+      document.getElementById('inv-line-prod').innerHTML = '';
+      onInvWarehouseChange();
       document.getElementById('inv-line-unit-mode').innerHTML = (state.customUnits || []).map(u => `<option value="${u.id}">واحد: ${u.name}</option>`).join('');
       renderInvoiceSettlementAccounts();
       checkPartyCredit(); onInvProductChange(); renderInvDraftLines();
@@ -4974,6 +5133,32 @@
       b.textContent = rem <= 0 ? `⚠️ هشدار: مشتری از سقف اعتبار ${money(p.creditLimit)} عبور کرده است!` : `✔ اعتبار باقیمانده مشتری: ${money(rem)}`;
     }
 
+    function resolveProductWarehouseId(product) {
+      if (!product) return null;
+      if (product.warehouseId !== null && product.warehouseId !== undefined && product.warehouseId !== '') {
+        return String(product.warehouseId);
+      }
+      const batchWarehouseIds = [...new Set((Array.isArray(product.batches) ? product.batches : [])
+        .map(batch => batch?.warehouseId).filter(value => value !== null && value !== undefined && value !== '').map(String))];
+      if (batchWarehouseIds.length === 1) return batchWarehouseIds[0];
+      if (batchWarehouseIds.length === 0 && (state.warehouses || []).length === 1) return String(state.warehouses[0].id);
+      return null;
+    }
+
+    function onInvWarehouseChange() {
+      const warehouseId = String(document.getElementById('inv-warehouse')?.value || '');
+      const select = document.getElementById('inv-line-prod');
+      if (!select) return;
+      const currentId = select.value;
+      const products = state.products.filter(product => resolveProductWarehouseId(product) === warehouseId);
+      select.innerHTML = products.map(product =>
+        `<option value="${product.id}">${product.name} (موجود: ${faNum(product.stock)} KG)</option>`
+      ).join('');
+      if (products.some(product => String(product.id) === String(currentId))) select.value = currentId;
+      else select.value = products[0] ? products[0].id : '';
+      onInvProductChange();
+    }
+
     function onInvProductChange() {
       const p = state.products.find(x => x.id === document.getElementById('inv-line-prod').value);
       if (!p) return;
@@ -5004,6 +5189,11 @@
       const price = isGift ? 0 : Number(document.getElementById('inv-line-price').value || 0);
       const disc = isGift ? 0 : Number(document.getElementById('inv-line-disc').value || 0);
       if (!p || rawQty <= 0) return;
+      const selectedWarehouseId = String(document.getElementById('inv-warehouse').value || '');
+      if (resolveProductWarehouseId(p) !== selectedWarehouseId) {
+        showToast('این کالا متعلق به انبار انتخاب‌شده نیست؛ کالا را از فهرست همان انبار انتخاب کنید.', 'error');
+        return;
+      }
 
       if (unitId !== 'kg' && !document.getElementById('confirm-unit-conv').checked) {
         showToast('لطفاً تیک تأیید تبدیل واحد به کیلوگرم پیش از ثبت را فعال کنید.', 'error');
@@ -5125,10 +5315,13 @@
         for (const line of invoiceLines) {
           const product = state.products.find(entry => String(entry.id) === String(line.productId));
           if (!product) throw new Error('کالای یکی از ردیف‌های فاکتور پیدا نشد.');
+          if (resolveProductWarehouseId(product) !== String(warehouseId)) {
+            throw new Error('کالای انتخاب‌شده متعلق به انبار فاکتور نیست؛ ثبت متوقف شد.');
+          }
           if (!simulatedProducts.has(product)) simulatedProducts.set(product, JSON.parse(JSON.stringify(product)));
           const simulated = simulatedProducts.get(product);
           if (type === 'sale') {
-            const fifo = consumeFifoStock(simulated, line.kg);
+            const fifo = consumeFifoStock(simulated, line.kg, warehouseId);
             let lineCost = Number(line.kg) * Number(product.buyPrice || 0);
             line.fifoAllocations = fifo.allocations;
             line.costingMethod = state.costingMethod;
@@ -5383,9 +5576,9 @@
           if (!simulatedProducts.has(entry.product)) simulatedProducts.set(entry.product, JSON.parse(JSON.stringify(entry.product)));
           const simulated = simulatedProducts.get(entry.product);
           if (inv.type === 'sale') {
-            restoreFifoAllocations(simulated, entry.item.fifoAllocations || [], entry.qty, entry.item.costOfGoodsSold ? entry.item.costOfGoodsSold / entry.item.kg : simulated.buyPrice, returnId, entry.item.fifoReturnedAllocations || []);
+            restoreFifoAllocations(simulated, entry.item.fifoAllocations || [], entry.qty, entry.item.costOfGoodsSold ? entry.item.costOfGoodsSold / entry.item.kg : simulated.buyPrice, returnId, entry.item.fifoReturnedAllocations || [], inv.warehouseId || resolveProductWarehouseId(entry.product));
             getReturnCostOfGoods(entry.item, entry.qty, entry.product.buyPrice);
-          } else consumeFifoStock(simulated, entry.qty);
+          } else consumeFifoStock(simulated, entry.qty, inv.warehouseId || resolveProductWarehouseId(entry.product));
         }
       } catch (error) {
         showToast('کنترل تخصیص بچ و بهای تمام‌شده برگشتی ناموفق بود؛ هیچ تغییری ثبت نشد. ' + (error?.message || ''), 'error');
@@ -5423,9 +5616,9 @@
         it.returnedKg = Number(it.returnedKg || 0) + q;
         if (inv.type === 'sale') {
           p.stock += q;
-          it.fifoReturnedAllocations = [...(it.fifoReturnedAllocations || []), ...restoreFifoAllocations(p, it.fifoAllocations || [], q, it.costOfGoodsSold ? it.costOfGoodsSold / it.kg : p.buyPrice, returnId, it.fifoReturnedAllocations || [])];
+          it.fifoReturnedAllocations = [...(it.fifoReturnedAllocations || []), ...restoreFifoAllocations(p, it.fifoAllocations || [], q, it.costOfGoodsSold ? it.costOfGoodsSold / it.kg : p.buyPrice, returnId, it.fifoReturnedAllocations || [], inv.warehouseId || resolveProductWarehouseId(p))];
         } else {
-          consumeFifoStock(p, q);
+          consumeFifoStock(p, q, inv.warehouseId || resolveProductWarehouseId(p));
           p.stock -= q;
         }
         p.kardex.push({ date: getTodayJalaliDate(), doc: `برگشت جزئی فاکتور #${invId}`, inQty: inv.type === 'sale' ? q : 0, outQty: inv.type === 'sale' ? 0 : q, bal: p.stock, price: it.price });
@@ -5539,10 +5732,10 @@
             restoreFifoAllocations(
               simulated, entry.item.fifoAllocations || [], entry.quantity,
               entry.item.costOfGoodsSold ? entry.item.costOfGoodsSold / entry.item.kg : simulated.buyPrice,
-              'CANCEL-' + invId, entry.item.fifoReturnedAllocations || []
+              'CANCEL-' + invId, entry.item.fifoReturnedAllocations || [], inv.warehouseId || resolveProductWarehouseId(entry.product)
             );
           } else {
-            consumeFifoStock(simulated, entry.quantity);
+            consumeFifoStock(simulated, entry.quantity, inv.warehouseId || resolveProductWarehouseId(entry.product));
           }
         }
       } catch (error) {
@@ -5598,11 +5791,11 @@
             ...restoreFifoAllocations(
               product, item.fifoAllocations || [], quantity,
               item.costOfGoodsSold ? item.costOfGoodsSold / item.kg : product.buyPrice,
-              'CANCEL-' + invId, item.fifoReturnedAllocations || []
+              'CANCEL-' + invId, item.fifoReturnedAllocations || [], inv.warehouseId || resolveProductWarehouseId(product)
             )
           ];
         } else {
-          consumeFifoStock(product, quantity);
+          consumeFifoStock(product, quantity, inv.warehouseId || resolveProductWarehouseId(product));
           product.stock -= quantity;
         }
       }
@@ -7757,8 +7950,24 @@
       if (state.accountCatalog.some(a => a.code === code) || CHART_ACCOUNTS.some(a => a.code === code)) { showToast('این کد حساب قبلاً استفاده شده است.', 'error'); return; }
       const account = { code, name };
       CHART_ACCOUNTS.push(account);
-      state.accountCatalog.push({ id: 'SUB-' + code, code, name, level: 'subsidiary', parentId, system: false, active: true });
+      state.accountCatalog.push({
+        id: 'SUB-' + code, code, name, level: 'subsidiary', parentId, system: false, active: true,
+        requiresParty: !!document.getElementById('new-acc-requires-party')?.checked,
+        requiresCostCenter: !!document.getElementById('new-acc-requires-cost-center')?.checked,
+        requiresCurrency: !!document.getElementById('new-acc-requires-currency')?.checked,
+        requiresBankAccount: !!document.getElementById('new-acc-requires-bank')?.checked,
+        normalBalance: inferAccountNormalBalance(code)
+      });
       saveState(); renderAccountingModule(); showToast('حساب معین جدید ثبت شد.');
+    }
+
+    function toggleCustomAccountStatus(code) {
+      const account = (state.accountCatalog || []).find(item => String(item.code) === String(code) && item.level === 'subsidiary' && item.system !== true);
+      if (!account) { showToast('فقط حساب‌های معین سفارشی قابل تغییر وضعیت هستند.', 'error'); return; }
+      account.active = account.active === false;
+      saveState();
+      renderAccountingModule();
+      showToast(account.active ? 'حساب فعال شد؛ ثبت گردش مجاز است.' : 'حساب غیرفعال شد؛ سوابق قبلی حفظ می‌شوند و ثبت گردش جدید متوقف است.');
     }
 
     let trialBalanceFromDate = null;
@@ -8096,10 +8305,13 @@
         const rows = (state.accountCatalog || []).slice().sort((a, b) => a.code.localeCompare(b.code)).map(a => {
           const indent = a.level === 'group' ? '' : (a.level === 'general' ? '　　' : '　　　　');
           const levelName = a.level === 'group' ? 'گروه' : (a.level === 'general' ? 'کل' : 'معین');
-          return `<div class="flex items-center justify-between gap-2 p-2 rounded-lg border ${a.level === 'group' ? 'bg-slate-100 font-black' : (a.level === 'general' ? 'bg-sky-50 font-bold' : 'bg-white')}" style="margin-right:${a.level === 'group' ? 0 : (a.level === 'general' ? 12 : 24)}px"><span>${indent}${faNum(a.code)} - ${a.name}</span><span class="text-[10px] text-slate-400">${levelName}</span></div>`;
+          const statusControl = a.level === 'subsidiary' && !a.system
+            ? `<button onclick="toggleCustomAccountStatus('${a.code}')" class="px-2 py-1 rounded-lg text-[10px] font-bold ${a.active === false ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}">${a.active === false ? 'غیرفعال — فعال‌سازی' : 'فعال — غیرفعال‌سازی'}</button>`
+            : '';
+          return `<div class="flex items-center justify-between gap-2 p-2 rounded-lg border ${a.level === 'group' ? 'bg-slate-100 font-black' : (a.level === 'general' ? 'bg-sky-50 font-bold' : 'bg-white')}" style="margin-right:${a.level === 'group' ? 0 : (a.level === 'general' ? 12 : 24)}px"><span>${indent}${faNum(a.code)} - ${a.name}</span><span class="flex items-center gap-2 text-[10px] text-slate-400">${levelName} ${statusControl}</span></div>`;
         }).join('');
         const parents = (state.accountCatalog || []).filter(a => a.level === 'general' && a.active);
-        box.innerHTML = `<div class="bg-white rounded-2xl p-4 border space-y-3"><div class="font-black text-sm">درخت حساب‌ها: گروه ← کل ← معین</div><div class="space-y-1">${rows}</div><div class="border-t pt-3 space-y-2"><strong>افزودن حساب معین جدید</strong><div class="grid grid-cols-1 md:grid-cols-3 gap-2"><select id="new-acc-parent" class="touch-btn border rounded-xl px-2">${parents.map(p => `<option value="${p.id}">${faNum(p.code)} - ${p.name}</option>`).join('')}</select><input id="new-acc-code" class="touch-btn border rounded-xl px-2" inputmode="numeric" placeholder="کد حساب (۴ رقم یا بیشتر)" /><input id="new-acc-name" class="touch-btn border rounded-xl px-2" placeholder="نام حساب" /></div><button onclick="saveCustomAccount()" class="touch-btn bg-holoo-700 text-white rounded-xl px-4 font-bold">ثبت حساب جدید</button><p class="text-[10px] text-slate-500">حساب دارای گردش حذف نمی‌شود؛ کدهای فعلی و اسناد قبلی حفظ شده‌اند.</p></div></div>`;
+        box.innerHTML = `<div class="bg-white rounded-2xl p-4 border space-y-3"><div class="font-black text-sm">درخت حساب‌ها: گروه ← کل ← معین</div><div class="space-y-1">${rows}</div><div class="border-t pt-3 space-y-2"><strong>افزودن حساب معین جدید</strong><div class="grid grid-cols-1 md:grid-cols-3 gap-2"><select id="new-acc-parent" class="touch-btn border rounded-xl px-2">${parents.map(p => `<option value="${p.id}">${faNum(p.code)} - ${p.name}</option>`).join('')}</select><input id="new-acc-code" class="touch-btn border rounded-xl px-2" inputmode="numeric" placeholder="کد حساب (۴ رقم یا بیشتر)" /><input id="new-acc-name" class="touch-btn border rounded-xl px-2" placeholder="نام حساب" /></div><div class="flex flex-wrap gap-3 text-xs text-slate-600"><label><input id="new-acc-requires-party" type="checkbox" class="ml-1" /> تفصیلی/طرف حساب اجباری</label><label><input id="new-acc-requires-cost-center" type="checkbox" class="ml-1" /> مرکز هزینه اجباری</label><label><input id="new-acc-requires-currency" type="checkbox" class="ml-1" /> ارز اجباری</label><label><input id="new-acc-requires-bank" type="checkbox" class="ml-1" /> زیرحساب بانکی اجباری</label></div><button onclick="saveCustomAccount()" class="touch-btn bg-holoo-700 text-white rounded-xl px-4 font-bold">ثبت حساب جدید</button><p class="text-[10px] text-slate-500">حساب دارای گردش حذف نمی‌شود؛ کدهای فعلی و اسناد قبلی حفظ شده‌اند.</p></div></div>`;
       } else if (activeAccTab === 'journal') {
         const journalRows = (state.vouchers || []).filter(v => !journalVoucherFilter || String(v.id) === journalVoucherFilter);
         box.innerHTML = `<div class="flex items-center justify-between gap-2 bg-white border rounded-xl p-3"><strong>دفتر روزنامه ${journalVoucherFilter ? `— نمایش سند #${faNum(journalVoucherFilter)}` : '— همه اسناد'}</strong>${journalVoucherFilter ? '<button onclick="clearJournalVoucherFilter()" class="px-3 py-1 rounded-lg bg-slate-200 font-bold">نمایش همه اسناد</button>' : ''}</div>` + journalRows.map(v => `

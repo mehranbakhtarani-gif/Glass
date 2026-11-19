@@ -51,9 +51,10 @@ ehsan_result="$(cat /tmp/glass-ehsan-result.json)"
 echo "Mehran concurrent result: $mehran_result"
 echo "Ehsan concurrent result: $ehsan_result"
 
-statuses="$(printf '%s\n%s\n' "$mehran_result" "$ehsan_result" | grep -o '"status": "[^"]*"' | sort | tr '\n' ' ')"
-if [[ "$statuses" != '"status": "applied" "status": "conflict" ' ]]; then
-  echo "Expected exactly one applied and one conflict; got: $statuses" >&2
+applied_count="$(printf '%s\n%s\n' "$mehran_result" "$ehsan_result" | grep -c '"status": "applied"' || true)"
+conflict_count="$(printf '%s\n%s\n' "$mehran_result" "$ehsan_result" | grep -c '"status": "conflict"' || true)"
+if [[ "$applied_count" != "1" || "$conflict_count" != "1" ]]; then
+  echo "Expected exactly one applied and one conflict; got applied=$applied_count conflict=$conflict_count" >&2
   exit 1
 fi
 

@@ -2026,13 +2026,20 @@
     let cloudConfig = (() => {
       try {
         const saved = JSON.parse(localStorage.getItem(CLOUD_CFG_KEY) || 'null');
-        if (saved && saved.url && saved.key) return saved;
+        if (saved && saved.url && saved.key) {
+          const savedUrl = String(saved.url).replace(/\/+$/, '');
+          const isHolooProject = savedUrl.includes('qsdlthvnfmjbodtdkbqc.supabase.co') ||
+            (saved.table === 'holoo_sync' && saved.recordId === 'main_company_state');
+          if (!isHolooProject) return saved;
+          // پاک‌سازی اتصال قدیمی که Glass را به فضای داده Holoo متصل می‌کرد.
+          try { localStorage.removeItem(CLOUD_CFG_KEY); } catch (e) {}
+        }
       } catch (e) {}
       return {
-        url: 'https://qsdlthvnfmjbodtdkbqc.supabase.co',
-        key: 'sb_publishable_pqLUltTUvAEPnE786BFKWw_uc8_R5Fk',
-        table: 'holoo_sync',
-        recordId: 'main_company_state'
+        url: '',
+        key: '',
+        table: 'glass_sync',
+        recordId: 'glass_main_company_state'
       };
     })();
 
@@ -2225,6 +2232,10 @@
       const u = document.getElementById('sb-url-input').value.trim().replace(/\/$/, '');
       const k = document.getElementById('sb-key-input').value.trim();
       if (!u || !k) { showToast('لطفاً URL و Key سوپابیس را وارد کنید.', 'error'); return; }
+      if (u.includes('qsdlthvnfmjbodtdkbqc.supabase.co')) {
+        showToast('برای حفظ استقلال Glass، اتصال به پروژه Supabase هلو مجاز نیست؛ پروژه اختصاصی Glass لازم است.', 'error');
+        return;
+      }
       cloudConfig.url = u;
       cloudConfig.key = k;
       try { localStorage.setItem(CLOUD_CFG_KEY, JSON.stringify(cloudConfig)); }
@@ -2254,6 +2265,9 @@
       try {
         await operationJournalBarrier;
         const journalResult = await pushOperationJournalToSupabase();
+        if (!journalResult.supported && journalResult.pendingOperationIds?.length) {
+          throw new Error('سرویس ثبت اتمیک Glass روی دیتابیس مستقل نصب نشده است؛ صف عملیات حفظ شد و ارسال snapshot قدیمی متوقف شد.');
+        }
         if (journalResult.supported) {
           if (journalResult.conflict) return false;
           if (journalResult.applied > 0) {
@@ -2667,7 +2681,7 @@
       if (!operations.length) return { supported: false, applied: 0, pendingOperationIds: [] };
       const queuedAtStart = localStorage.getItem(CLOUD_OUTBOX_KEY) || '';
       const localUpdatedAt = localStorage.getItem(LOCAL_UPDATED_KEY) || '';
-      const rpcUrl = cloudConfig.url.replace(/\/$/, '') + '/rest/v1/rpc/holoo_apply_state_operation';
+      const rpcUrl = cloudConfig.url.replace(/\/$/, '') + '/rest/v1/rpc/glass_apply_state_operation';
       let expectedUpdatedAt = localStorage.getItem(CLOUD_BASELINE_KEY) || null;
       let applied = 0;
       let didMerge = false;
@@ -5420,7 +5434,7 @@
       }
 
       saveState(); document.getElementById('invoice-form-card').classList.add('hidden'); renderAll();
-      showToast(`فاکتور #${faNum(id)} ثبت، سند حسابداری صادر و در Supabase همگام شد ✔`);
+      showToast(`فاکتور #${faNum(id)} در حافظه محلی ثبت شد؛ همگام‌سازی پس از تأیید سرور انجام می‌شود.`);
     }
 
         function renderInvoicesModule() {

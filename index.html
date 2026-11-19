@@ -3687,11 +3687,33 @@
       const voucherLines = lines.map(line => line.code === '1102' && source?.bankAccountId
         ? { ...line, bankAccountId: String(source.bankAccountId) }
         : { ...line });
+      const vouchersBefore = state.vouchers.slice();
+      const auditBefore = Array.isArray(state.auditLogs) ? state.auditLogs.slice() : [];
+      const check = source?.type === 'check' ? state.checks.find(item => String(item.id) === String(source.id)) : null;
+      const invoice = source?.type === 'invoice' ? state.invoices.find(item => String(item.id) === String(source.id)) : null;
+      const previousCheckVoucherRefs = check ? check.voucherRefs : undefined;
+      const previousInvoiceVoucherId = invoice ? invoice.voucherId : undefined;
       state.vouchers.unshift({ id, date, operationDate: date, createdAt: new Date().toISOString(), operationMode, actor: state.activeRole || 'mehran', deviceId: typeof DEVICE_ID !== 'undefined' ? DEVICE_ID : null, locked: false, desc, lines: voucherLines, ...(source ? { sourceType: source.type, sourceId: String(source.id), sourceEvent: source.event || 'default' } : {}) });
-      if (source?.type === 'check') { const check = state.checks.find(item => String(item.id) === String(source.id)); if (check) check.voucherRefs = { ...(check.voucherRefs || {}), [source.event || 'initial']: id }; }
-      if (source?.type === 'invoice') { const invoice = state.invoices.find(item => String(item.id) === String(source.id)); if (invoice) invoice.voucherId = id; }
+      if (check) check.voucherRefs = { ...(check.voucherRefs || {}), [source.event || 'initial']: id };
+      if (invoice) invoice.voucherId = id;
       addAudit(`صدور سند حسابداری #${id}: ${desc}`, { mode: operationMode, operationDate: date, sourceType: source?.type || 'accounting_voucher' });
-      if (!source?.deferSave) saveState();
+      if (!source?.deferSave) {
+        let saved = false;
+        try { saved = saveState() === true; } catch (error) {
+          state.vouchers = vouchersBefore;
+          state.auditLogs = auditBefore;
+          if (check) check.voucherRefs = previousCheckVoucherRefs;
+          if (invoice) invoice.voucherId = previousInvoiceVoucherId;
+          throw error;
+        }
+        if (!saved) {
+          state.vouchers = vouchersBefore;
+          state.auditLogs = auditBefore;
+          if (check) check.voucherRefs = previousCheckVoucherRefs;
+          if (invoice) invoice.voucherId = previousInvoiceVoucherId;
+          throw new Error('ذخیره محلی سند ناموفق بود؛ تغییرات سند و ارجاعات آن به وضعیت قبلی بازگردانده شد.');
+        }
+      }
       return id;
     }
 
@@ -4750,6 +4772,8 @@
       const date = getTodayJalaliDate();
       const plans = [];
       const voucherLines = [];
+      const vouchersBefore = state.vouchers.slice();
+      const auditBefore = Array.isArray(state.auditLogs) ? state.auditLogs.slice() : [];
       try {
         for (const product of state.products) {
           const real = Number(document.getElementById(`st-real-${product.id}`)?.value);
@@ -4778,7 +4802,7 @@
               ? { code: '1105', partyId: null, desc: product.name, debit: 0, credit: value }
               : { code: '3102', partyId: null, desc: product.name, debit: 0, credit: value });
           }
-          plans.push({ product, simulated });
+          plans.push({ product, original: JSON.parse(JSON.stringify(product)), simulated });
         }
         if (voucherLines.length) {
           const voucherId = postVoucher('سند تجمیعی مغایرت انبارگردانی ' + date, voucherLines, date,
@@ -4792,7 +4816,21 @@
       for (const plan of plans) {
         Object.assign(plan.product, plan.simulated);
       }
-      saveState(); closeModal('modal-stock-adjust'); renderAll();
+      let saved = false;
+      try { saved = saveState() === true; } catch (error) {
+        saved = false;
+      }
+      if (!saved) {
+        for (const plan of plans) {
+          Object.keys(plan.product).forEach(key => delete plan.product[key]);
+          Object.assign(plan.product, plan.original);
+        }
+        state.vouchers = vouchersBefore;
+        state.auditLogs = auditBefore;
+        showToast('ذخیره نهایی انبارگردانی ناموفق بود؛ موجودی، بچ‌ها و سند اصلاحیه به وضعیت قبلی بازگردانده شدند.', 'error');
+        return;
+      }
+      closeModal('modal-stock-adjust'); renderAll();
       showToast(plans.length ? 'انبارگردانی ثبت شد؛ اصلاحیه‌های مالی در یک سند تجمیعی صادر شدند.' : 'مغایرتی در موجودی مشاهده نشد.');
     }
     // =========================================================================

@@ -552,7 +552,7 @@
 
   
     /* Glass Flow — floating workflow hub. Presentation/navigation only; domain data is untouched. */
-    #glass-flow-dock { position:fixed; left:14px; bottom:calc(104px + env(safe-area-inset-bottom)); z-index:65; direction:rtl; }
+    #glass-flow-dock { position:relative; left:auto; right:auto; bottom:auto; z-index:66; direction:rtl; flex:0 0 auto; }
     #glass-flow-launcher {
       display:flex; align-items:center; gap:9px; min-height:50px; padding:0 16px;
       border:1px solid rgba(255,255,255,.82); border-radius:18px; color:#f0fdfa;
@@ -563,7 +563,7 @@
     }
     #glass-flow-launcher .flow-orbit { width:25px;height:25px;display:grid;place-items:center;border-radius:9px;background:rgba(255,255,255,.16);font-size:15px; }
     #glass-flow-panel {
-      position:absolute; left:0; bottom:60px; width:min(370px,calc(100vw - 28px)); max-height:min(72dvh,680px);
+      position:absolute; right:0; left:auto; top:calc(100% + 8px); bottom:auto; width:min(370px,calc(100vw - 28px)); max-height:min(72dvh,680px);
       display:none; flex-direction:column; overflow:hidden; border:1px solid rgba(255,255,255,.88);
       border-radius:23px; color:#163b43; background:rgba(247,255,254,.94);
       box-shadow:0 26px 75px rgba(3,54,62,.24),inset 0 1px 0 #fff;
@@ -588,8 +588,8 @@
     .glass-flow-item.is-active { color:#075b56;background:linear-gradient(110deg,#d9f8ef,#effcf8);border-color:rgba(13,148,136,.36);box-shadow:inset -3px 0 #0d9488; }
     .glass-flow-empty { display:none;padding:22px 8px;text-align:center;color:#789097;font-size:11px; }
     #glass-flow-dock.flow-dragging { transition:none !important; }
-    @media (min-width:1024px) { #glass-flow-dock { bottom:22px;left:22px; } #glass-flow-panel { width:390px; } }
-    @media (max-width:420px) { #glass-flow-dock { left:10px;bottom:calc(100px + env(safe-area-inset-bottom)); } #glass-flow-panel { width:calc(100vw - 20px); } }
+    @media (min-width:1024px) { #glass-flow-panel { width:390px; } }
+    @media (max-width:420px) { #glass-flow-panel { width:min(370px,calc(100vw - 20px)); } }
     @media print { #glass-flow-dock { display:none !important; } }
     @media (prefers-reduced-motion:reduce) { #glass-flow-dock * { animation:none !important;transition:none !important; } }
 
@@ -611,6 +611,70 @@
       </div>
 
       <div class="flex items-center gap-1.5 lg:gap-2 flex-wrap">
+    <!-- Glass Flow: draggable floating hub for connected operational workflows -->
+    <div id="glass-flow-dock" aria-label="مرکز عملیات شناور">
+      <section id="glass-flow-panel" aria-label="جریان عملیات" aria-hidden="true">
+        <div class="glass-flow-head" id="glass-flow-drag-handle">
+          <div class="flex items-center gap-2">
+            <span class="flow-orbit">✣</span>
+            <div><div class="font-black text-sm text-teal-950">Flow شناور</div><div class="text-[9px] font-bold text-teal-700/75">عملیات مرتبط، یک‌جا و پیوسته</div></div>
+          </div>
+          <button type="button" id="glass-flow-close" aria-label="بستن">✕</button>
+        </div>
+        <div class="glass-flow-search"><input id="glass-flow-search" type="search" placeholder="جست‌وجوی عملیات یا بخش..." autocomplete="off" /></div>
+        <div class="glass-flow-quick">
+          <button type="button" data-flow-action="sale">＋ فاکتور فروش</button>
+          <button type="button" data-flow-action="receive">↓ ثبت دریافت</button>
+          <button type="button" data-flow-action="import">＋ محموله واردات</button>
+        </div>
+        <div class="glass-flow-groups">
+          <section class="glass-flow-group">
+            <h4>۱. چرخه کالا تا فروش و تحویل</h4>
+            <div class="glass-flow-items">
+              <button class="glass-flow-item" data-flow-nav="products"><span>🧵</span><span>کالا و قیمت‌گذاری</span></button>
+              <button class="glass-flow-item" data-flow-nav="inventory"><span>📦</span><span>موجودی و کاردکس</span></button>
+              <button class="glass-flow-item" data-flow-nav="parties"><span>👥</span><span>مشتری و تأمین‌کننده</span></button>
+              <button class="glass-flow-item" data-flow-nav="orders"><span>📋</span><span>سفارش و پیش‌فاکتور</span></button>
+              <button class="glass-flow-item" data-flow-nav="invoices"><span>🧾</span><span>فاکتور و برگشت</span></button>
+            </div>
+          </section>
+          <section class="glass-flow-group">
+            <h4>۲. چرخه تأمین و واردات تا بهای تمام‌شده</h4>
+            <div class="glass-flow-items">
+              <button class="glass-flow-item" data-flow-nav="planner"><span>🧮</span><span>برنامه سرمایه</span></button>
+              <button class="glass-flow-item" data-flow-nav="imports"><span>🚢</span><span>محموله و ترخیص</span></button>
+              <button class="glass-flow-item" data-flow-nav="fx"><span>💱</span><span>ارز و تعهدات</span></button>
+              <button class="glass-flow-item" data-flow-nav="inventory"><span>📦</span><span>ورود به انبار</span></button>
+              <button class="glass-flow-item" data-flow-nav="accounting"><span>📊</span><span>سند و بهای تمام‌شده</span></button>
+            </div>
+          </section>
+          <section class="glass-flow-group">
+            <h4>۳. چرخه دریافت، پرداخت و کنترل نقدینگی</h4>
+            <div class="glass-flow-items">
+              <button class="glass-flow-item" data-flow-nav="treasury"><span>💳</span><span>صندوق، بانک و چک</span></button>
+              <button class="glass-flow-item" data-flow-nav="reconcile"><span>⚖️</span><span>مغایرت‌گیری بانک</span></button>
+              <button class="glass-flow-item" data-flow-nav="cashflow"><span>📈</span><span>پیش‌بینی نقدینگی</span></button>
+              <button class="glass-flow-item" data-flow-nav="aging"><span>⏳</span><span>سن مطالبات و بدهی‌ها</span></button>
+              <button class="glass-flow-item" data-flow-nav="accounting"><span>📚</span><span>ثبت و مرور اسناد</span></button>
+            </div>
+          </section>
+          <section class="glass-flow-group">
+            <h4>۴. چرخه مدیریت، حقوق و کنترل داخلی</h4>
+            <div class="glass-flow-items">
+              <button class="glass-flow-item" data-flow-nav="hr"><span>👔</span><span>پرسنل و حقوق</span></button>
+              <button class="glass-flow-item" data-flow-nav="assets"><span>🏢</span><span>دارایی و استهلاک</span></button>
+              <button class="glass-flow-item" data-flow-nav="approvals"><span>🛡️</span><span>تأیید و لاگ عملیات</span></button>
+              <button class="glass-flow-item" data-flow-nav="settings"><span>⚙️</span><span>تنظیمات و گزارش</span></button>
+              <button class="glass-flow-item" data-flow-nav="dashboard"><span>🏠</span><span>نمای کلی مدیریت</span></button>
+            </div>
+          </section>
+          <div class="glass-flow-empty" id="glass-flow-empty">عملیاتی با این عبارت پیدا نشد.</div>
+        </div>
+      </section>
+      <button type="button" id="glass-flow-launcher" aria-expanded="false" aria-controls="glass-flow-panel">
+        <span class="flow-orbit">✣</span><span>Flow شناور</span><span aria-hidden="true">⌃</span>
+      </button>
+    </div>
         <!-- Supabase Live Sync Pill & Quick Actions -->
         <div class="flex items-center gap-1 bg-black/30 px-2.5 py-1 rounded-xl border border-white/15 text-[11px]">
           <span id="cloud-status-badge" class="font-extrabold text-amber-300 flex items-center gap-1">⏳ در حال اتصال به Supabase...</span>
@@ -1353,71 +1417,6 @@
       </main>
     </div>
 
-
-    <!-- Glass Flow: draggable floating hub for connected operational workflows -->
-    <div id="glass-flow-dock" aria-label="مرکز عملیات شناور">
-      <section id="glass-flow-panel" aria-label="جریان عملیات" aria-hidden="true">
-        <div class="glass-flow-head" id="glass-flow-drag-handle">
-          <div class="flex items-center gap-2">
-            <span class="flow-orbit">✣</span>
-            <div><div class="font-black text-sm text-teal-950">Flow شناور</div><div class="text-[9px] font-bold text-teal-700/75">عملیات مرتبط، یک‌جا و پیوسته</div></div>
-          </div>
-          <button type="button" id="glass-flow-close" aria-label="بستن">✕</button>
-        </div>
-        <div class="glass-flow-search"><input id="glass-flow-search" type="search" placeholder="جست‌وجوی عملیات یا بخش..." autocomplete="off" /></div>
-        <div class="glass-flow-quick">
-          <button type="button" data-flow-action="sale">＋ فاکتور فروش</button>
-          <button type="button" data-flow-action="receive">↓ ثبت دریافت</button>
-          <button type="button" data-flow-action="import">＋ محموله واردات</button>
-        </div>
-        <div class="glass-flow-groups">
-          <section class="glass-flow-group">
-            <h4>۱. چرخه کالا تا فروش و تحویل</h4>
-            <div class="glass-flow-items">
-              <button class="glass-flow-item" data-flow-nav="products"><span>🧵</span><span>کالا و قیمت‌گذاری</span></button>
-              <button class="glass-flow-item" data-flow-nav="inventory"><span>📦</span><span>موجودی و کاردکس</span></button>
-              <button class="glass-flow-item" data-flow-nav="parties"><span>👥</span><span>مشتری و تأمین‌کننده</span></button>
-              <button class="glass-flow-item" data-flow-nav="orders"><span>📋</span><span>سفارش و پیش‌فاکتور</span></button>
-              <button class="glass-flow-item" data-flow-nav="invoices"><span>🧾</span><span>فاکتور و برگشت</span></button>
-            </div>
-          </section>
-          <section class="glass-flow-group">
-            <h4>۲. چرخه تأمین و واردات تا بهای تمام‌شده</h4>
-            <div class="glass-flow-items">
-              <button class="glass-flow-item" data-flow-nav="planner"><span>🧮</span><span>برنامه سرمایه</span></button>
-              <button class="glass-flow-item" data-flow-nav="imports"><span>🚢</span><span>محموله و ترخیص</span></button>
-              <button class="glass-flow-item" data-flow-nav="fx"><span>💱</span><span>ارز و تعهدات</span></button>
-              <button class="glass-flow-item" data-flow-nav="inventory"><span>📦</span><span>ورود به انبار</span></button>
-              <button class="glass-flow-item" data-flow-nav="accounting"><span>📊</span><span>سند و بهای تمام‌شده</span></button>
-            </div>
-          </section>
-          <section class="glass-flow-group">
-            <h4>۳. چرخه دریافت، پرداخت و کنترل نقدینگی</h4>
-            <div class="glass-flow-items">
-              <button class="glass-flow-item" data-flow-nav="treasury"><span>💳</span><span>صندوق، بانک و چک</span></button>
-              <button class="glass-flow-item" data-flow-nav="reconcile"><span>⚖️</span><span>مغایرت‌گیری بانک</span></button>
-              <button class="glass-flow-item" data-flow-nav="cashflow"><span>📈</span><span>پیش‌بینی نقدینگی</span></button>
-              <button class="glass-flow-item" data-flow-nav="aging"><span>⏳</span><span>سن مطالبات و بدهی‌ها</span></button>
-              <button class="glass-flow-item" data-flow-nav="accounting"><span>📚</span><span>ثبت و مرور اسناد</span></button>
-            </div>
-          </section>
-          <section class="glass-flow-group">
-            <h4>۴. چرخه مدیریت، حقوق و کنترل داخلی</h4>
-            <div class="glass-flow-items">
-              <button class="glass-flow-item" data-flow-nav="hr"><span>👔</span><span>پرسنل و حقوق</span></button>
-              <button class="glass-flow-item" data-flow-nav="assets"><span>🏢</span><span>دارایی و استهلاک</span></button>
-              <button class="glass-flow-item" data-flow-nav="approvals"><span>🛡️</span><span>تأیید و لاگ عملیات</span></button>
-              <button class="glass-flow-item" data-flow-nav="settings"><span>⚙️</span><span>تنظیمات و گزارش</span></button>
-              <button class="glass-flow-item" data-flow-nav="dashboard"><span>🏠</span><span>نمای کلی مدیریت</span></button>
-            </div>
-          </section>
-          <div class="glass-flow-empty" id="glass-flow-empty">عملیاتی با این عبارت پیدا نشد.</div>
-        </div>
-      </section>
-      <button type="button" id="glass-flow-launcher" aria-expanded="false" aria-controls="glass-flow-panel">
-        <span class="flow-orbit">✣</span><span>Flow شناور</span><span aria-hidden="true">⌃</span>
-      </button>
-    </div>
 
     <!-- ==================== MOBILE BOTTOM NAV ==================== -->
     <nav class="mobile-bottom-nav fixed bottom-2 left-2.5 right-2.5 z-40 bg-white/95 backdrop-blur-xl border border-slate-200 shadow-xl rounded-2xl px-1 py-1">

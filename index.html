@@ -4206,9 +4206,14 @@
       return batch;
     }
 
-    function consumeFifoStock(product, quantity) {
+    function consumeFifoStock(product, quantity, warehouseId = product?.warehouseId) {
       const qty = Number(quantity || 0);
       if (!product || !Number.isFinite(qty) || qty <= 0) throw new Error('مقدار خروج موجودی معتبر نیست.');
+      const requestedWarehouseId = warehouseId === null || warehouseId === undefined ? '' : String(warehouseId);
+      const productWarehouseId = product.warehouseId === null || product.warehouseId === undefined ? '' : String(product.warehouseId);
+      if (requestedWarehouseId && productWarehouseId && requestedWarehouseId !== productWarehouseId) {
+        throw new Error('انبار فاکتور با انبار اختصاص‌یافته به کالا یکسان نیست.');
+      }
       const reconciliation = inspectProductBatchReconciliation(product);
       if (Number.isFinite(Number(product.stock)) && reconciliation.tracked > Number(product.stock) + 0.000001) {
         throw new Error('جمع بچ‌ها از موجودی کل بیشتر است؛ ابتدا مغایرت‌گیری بچ و کاردکس انجام شود.');
@@ -4217,12 +4222,15 @@
       const todayOrdinal = typeof currentJalaliOrdinal === 'function' ? currentJalaliOrdinal() : null;
       const eligible = batches.filter(batch => {
         if (Number(batch.remainingQty || 0) <= 0) return false;
+        const batchWarehouseId = batch.warehouseId === null || batch.warehouseId === undefined || batch.warehouseId === ''
+          ? productWarehouseId : String(batch.warehouseId);
+        if (requestedWarehouseId && batchWarehouseId !== requestedWarehouseId) return false;
         if (!batch.expiryDate || todayOrdinal === null || typeof jalaliDateOrdinal !== 'function') return true;
         const expiryOrdinal = jalaliDateOrdinal(batch.expiryDate);
         return expiryOrdinal === null || expiryOrdinal >= todayOrdinal;
       });
       const available = eligible.reduce((sum, b) => sum + Math.max(0, Number(b.remainingQty || 0)), 0);
-      if (available + 0.000001 < qty) throw new Error('موجودی بچ‌های غیرمنقضی برای خروج FIFO کافی نیست.');
+      if (available + 0.000001 < qty) throw new Error('موجودی بچ‌های غیرمنقضی در انبار انتخاب‌شده برای خروج FIFO کافی نیست.');
       const ordered = eligible.sort((a, b) => {
         const ad = String(a.receivedDate || '9999/99/99');
         const bd = String(b.receivedDate || '9999/99/99');
@@ -4236,16 +4244,25 @@
         const take = Math.min(remaining, Number(batch.remainingQty || 0));
         batch.remainingQty = Math.max(0, Number(batch.remainingQty || 0) - take);
         totalCost += take * Number(batch.unitCost || 0);
-        allocations.push({ batchId: batch.id, lot: batch.lot, quantity: take, unitCost: Number(batch.unitCost || 0), expiryDate: batch.expiryDate || '' });
+        allocations.push({
+          batchId: batch.id, lot: batch.lot, quantity: take,
+          unitCost: Number(batch.unitCost || 0), expiryDate: batch.expiryDate || '',
+          warehouseId: batch.warehouseId ?? (requestedWarehouseId || productWarehouseId || null)
+        });
         remaining -= take;
       }
       return { totalCost: Math.round(totalCost), unitCost: totalCost / qty, allocations };
     }
 
-    function restoreFifoAllocations(product, allocations, quantityToRestore, fallbackCost, sourceRef, alreadyRestored = []) {
+    function restoreFifoAllocations(product, allocations, quantityToRestore, fallbackCost, sourceRef, alreadyRestored = [], warehouseId = product?.warehouseId) {
       const qty = Number(quantityToRestore), safeFallbackCost = Number(fallbackCost);
       if (!product || !Number.isFinite(qty) || qty <= 0) throw new Error('مقدار برگشتی برای بازیابی بچ معتبر نیست.');
       if (!Number.isFinite(safeFallbackCost) || safeFallbackCost < 0) throw new Error('بهای جایگزین بچ برگشتی معتبر نیست.');
+      const requestedWarehouseId = warehouseId === null || warehouseId === undefined ? '' : String(warehouseId);
+      const productWarehouseId = product.warehouseId === null || product.warehouseId === undefined ? '' : String(product.warehouseId);
+      if (requestedWarehouseId && productWarehouseId && requestedWarehouseId !== productWarehouseId) {
+        throw new Error('انبار برگشت با انبار اختصاص‌یافته به کالا یکسان نیست.');
+      }
       const batches = Array.isArray(product.batches) ? product.batches : (product.batches = []);
       const restored = [];
       if (Array.isArray(allocations) && allocations.length) {
@@ -4254,9 +4271,12 @@
         for (const allocation of allocations) {
           const batchId = String(allocation?.batchId ?? '');
           const allocatedQty = Number(allocation?.quantity), unitCost = Number(allocation?.unitCost);
+          const allocationWarehouseId = allocation?.warehouseId === null || allocation?.warehouseId === undefined
+            ? (requestedWarehouseId || productWarehouseId) : String(allocation.warehouseId);
           if (!batchId || seenBatchIds.has(batchId) || !Number.isFinite(allocatedQty) ||
-              allocatedQty <= 0 || !Number.isFinite(unitCost) || unitCost < 0) {
-            throw new Error('اطلاعات تخصیص بچ برای برگشت نامعتبر است.');
+              allocatedQty <= 0 || !Number.isFinite(unitCost) || unitCost < 0 ||
+              (requestedWarehouseId && allocationWarehouseId !== requestedWarehouseId)) {
+            throw new Error('اطلاعات تخصیص بچ یا انبار برای برگشت نامعتبر است.');
           }
           seenBatchIds.add(batchId);
           if (remaining <= 0.000001) continue;
@@ -4270,19 +4290,35 @@
           if (take <= 0) continue;
           const batch = batches.find(b => String(b.id) === batchId);
           if (batch) {
+            const batchWarehouseId = batch.warehouseId === null || batch.warehouseId === undefined
+              ? productWarehouseId : String(batch.warehouseId);
+            if (requestedWarehouseId && batchWarehouseId !== requestedWarehouseId) {
+              throw new Error('بچ مقصد برگشت متعلق به انبار فاکتور نیست.');
+            }
             const currentRemaining = Number(batch.remainingQty ?? 0);
             if (!Number.isFinite(currentRemaining) || currentRemaining < 0) throw new Error('موجودی باقی‌مانده بچ نامعتبر است.');
             batch.remainingQty = currentRemaining + take;
-          } else batches.push({ id: allocation.batchId, lot: allocation.lot, receivedDate: '', productionDate: '', expiryDate: allocation.expiryDate || '', quantity: take, remainingQty: take, unitCost, sourceType: 'sales_return', sourceRef });
-          restored.push({ batchId: allocation.batchId, quantity: take });
+          } else {
+            batches.push({
+              id: allocation.batchId, lot: allocation.lot, receivedDate: '', productionDate: '',
+              expiryDate: allocation.expiryDate || '', quantity: take, remainingQty: take, unitCost,
+              sourceType: 'sales_return', sourceRef, warehouseId: allocationWarehouseId || null
+            });
+          }
+          restored.push({ batchId: allocation.batchId, quantity: take, warehouseId: allocationWarehouseId || null });
           remaining -= take;
         }
         if (remaining > 0.000001) throw new Error('مقدار برگشتی با تخصیص بچ فاکتور سازگار نیست.');
         return restored;
       }
-      const fallbackBatch = { id: 'RETURN-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7), lot: 'RETURN-' + sourceRef, receivedDate: getTodayJalaliDate(), productionDate: '', expiryDate: '', quantity: qty, remainingQty: qty, unitCost: safeFallbackCost, sourceType: 'sales_return', sourceRef, warehouseId: product.warehouseId || null };
+      const fallbackBatch = {
+        id: 'RETURN-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+        lot: 'RETURN-' + sourceRef, receivedDate: getTodayJalaliDate(), productionDate: '',
+        expiryDate: '', quantity: qty, remainingQty: qty, unitCost: safeFallbackCost,
+        sourceType: 'sales_return', sourceRef, warehouseId: requestedWarehouseId || productWarehouseId || null
+      };
       batches.push(fallbackBatch);
-      return [{ batchId: fallbackBatch.id, quantity: qty }];
+      return [{ batchId: fallbackBatch.id, quantity: qty, warehouseId: fallbackBatch.warehouseId }];
     }
 
     // =========================================================================
@@ -4495,7 +4531,7 @@
       if (state.costingMethod === 'FIFO') {
         try {
           sourceSimulation = JSON.parse(JSON.stringify(p));
-          fifoPlan = consumeFifoStock(sourceSimulation, qty);
+          fifoPlan = consumeFifoStock(sourceSimulation, qty, sourceWh);
           const allocatedQty = Array.isArray(fifoPlan?.allocations)
             ? fifoPlan.allocations.reduce((sum, item) => sum + Number(item.quantity), 0)
             : NaN;
@@ -4584,7 +4620,7 @@
         if (real !== p.stock) {
           const diff = real - p.stock;
           if (diff > 0 && state.costingMethod === 'FIFO') addStockBatch(p, { lot: 'ADJ-' + Date.now() + '-' + p.id, quantity: diff, unitCost: p.buyPrice, receivedDate: getTodayJalaliDate(), sourceType: 'stocktake', sourceRef: p.id });
-          if (diff < 0 && state.costingMethod === 'FIFO') consumeFifoStock(p, Math.abs(diff));
+          if (diff < 0 && state.costingMethod === 'FIFO') consumeFifoStock(p, Math.abs(diff), p.warehouseId);
           p.stock = real;
           changes++;
           const val = Math.abs(diff) * p.buyPrice;
@@ -4934,7 +4970,9 @@
       document.getElementById('inv-next-no').textContent = faNum(nextNo);
       document.getElementById('inv-party').innerHTML = state.parties.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
       document.getElementById('inv-warehouse').innerHTML = state.warehouses.map(w => `<option value="${w.id}">${w.name}</option>`).join('');
-      document.getElementById('inv-line-prod').innerHTML = state.products.map(p => `<option value="${p.id}">${p.name} (موجود: ${faNum(p.stock)} KG)</option>`).join('');
+      document.getElementById('inv-warehouse').onchange = onInvWarehouseChange;
+      document.getElementById('inv-line-prod').innerHTML = '';
+      onInvWarehouseChange();
       document.getElementById('inv-line-unit-mode').innerHTML = (state.customUnits || []).map(u => `<option value="${u.id}">واحد: ${u.name}</option>`).join('');
       renderInvoiceSettlementAccounts();
       checkPartyCredit(); onInvProductChange(); renderInvDraftLines();
@@ -4974,6 +5012,32 @@
       b.textContent = rem <= 0 ? `⚠️ هشدار: مشتری از سقف اعتبار ${money(p.creditLimit)} عبور کرده است!` : `✔ اعتبار باقیمانده مشتری: ${money(rem)}`;
     }
 
+    function resolveProductWarehouseId(product) {
+      if (!product) return null;
+      if (product.warehouseId !== null && product.warehouseId !== undefined && product.warehouseId !== '') {
+        return String(product.warehouseId);
+      }
+      const batchWarehouseIds = [...new Set((Array.isArray(product.batches) ? product.batches : [])
+        .map(batch => batch?.warehouseId).filter(value => value !== null && value !== undefined && value !== '').map(String))];
+      if (batchWarehouseIds.length === 1) return batchWarehouseIds[0];
+      if (batchWarehouseIds.length === 0 && (state.warehouses || []).length === 1) return String(state.warehouses[0].id);
+      return null;
+    }
+
+    function onInvWarehouseChange() {
+      const warehouseId = String(document.getElementById('inv-warehouse')?.value || '');
+      const select = document.getElementById('inv-line-prod');
+      if (!select) return;
+      const currentId = select.value;
+      const products = state.products.filter(product => resolveProductWarehouseId(product) === warehouseId);
+      select.innerHTML = products.map(product =>
+        `<option value="${product.id}">${product.name} (موجود: ${faNum(product.stock)} KG)</option>`
+      ).join('');
+      if (products.some(product => String(product.id) === String(currentId))) select.value = currentId;
+      else select.value = products[0] ? products[0].id : '';
+      onInvProductChange();
+    }
+
     function onInvProductChange() {
       const p = state.products.find(x => x.id === document.getElementById('inv-line-prod').value);
       if (!p) return;
@@ -5004,6 +5068,11 @@
       const price = isGift ? 0 : Number(document.getElementById('inv-line-price').value || 0);
       const disc = isGift ? 0 : Number(document.getElementById('inv-line-disc').value || 0);
       if (!p || rawQty <= 0) return;
+      const selectedWarehouseId = String(document.getElementById('inv-warehouse').value || '');
+      if (resolveProductWarehouseId(p) !== selectedWarehouseId) {
+        showToast('این کالا متعلق به انبار انتخاب‌شده نیست؛ کالا را از فهرست همان انبار انتخاب کنید.', 'error');
+        return;
+      }
 
       if (unitId !== 'kg' && !document.getElementById('confirm-unit-conv').checked) {
         showToast('لطفاً تیک تأیید تبدیل واحد به کیلوگرم پیش از ثبت را فعال کنید.', 'error');
@@ -5125,10 +5194,13 @@
         for (const line of invoiceLines) {
           const product = state.products.find(entry => String(entry.id) === String(line.productId));
           if (!product) throw new Error('کالای یکی از ردیف‌های فاکتور پیدا نشد.');
+          if (resolveProductWarehouseId(product) !== String(warehouseId)) {
+            throw new Error('کالای انتخاب‌شده متعلق به انبار فاکتور نیست؛ ثبت متوقف شد.');
+          }
           if (!simulatedProducts.has(product)) simulatedProducts.set(product, JSON.parse(JSON.stringify(product)));
           const simulated = simulatedProducts.get(product);
           if (type === 'sale') {
-            const fifo = consumeFifoStock(simulated, line.kg);
+            const fifo = consumeFifoStock(simulated, line.kg, warehouseId);
             let lineCost = Number(line.kg) * Number(product.buyPrice || 0);
             line.fifoAllocations = fifo.allocations;
             line.costingMethod = state.costingMethod;
@@ -5383,9 +5455,9 @@
           if (!simulatedProducts.has(entry.product)) simulatedProducts.set(entry.product, JSON.parse(JSON.stringify(entry.product)));
           const simulated = simulatedProducts.get(entry.product);
           if (inv.type === 'sale') {
-            restoreFifoAllocations(simulated, entry.item.fifoAllocations || [], entry.qty, entry.item.costOfGoodsSold ? entry.item.costOfGoodsSold / entry.item.kg : simulated.buyPrice, returnId, entry.item.fifoReturnedAllocations || []);
+            restoreFifoAllocations(simulated, entry.item.fifoAllocations || [], entry.qty, entry.item.costOfGoodsSold ? entry.item.costOfGoodsSold / entry.item.kg : simulated.buyPrice, returnId, entry.item.fifoReturnedAllocations || [], inv.warehouseId || resolveProductWarehouseId(entry.product));
             getReturnCostOfGoods(entry.item, entry.qty, entry.product.buyPrice);
-          } else consumeFifoStock(simulated, entry.qty);
+          } else consumeFifoStock(simulated, entry.qty, inv.warehouseId || resolveProductWarehouseId(entry.product));
         }
       } catch (error) {
         showToast('کنترل تخصیص بچ و بهای تمام‌شده برگشتی ناموفق بود؛ هیچ تغییری ثبت نشد. ' + (error?.message || ''), 'error');
@@ -5423,9 +5495,9 @@
         it.returnedKg = Number(it.returnedKg || 0) + q;
         if (inv.type === 'sale') {
           p.stock += q;
-          it.fifoReturnedAllocations = [...(it.fifoReturnedAllocations || []), ...restoreFifoAllocations(p, it.fifoAllocations || [], q, it.costOfGoodsSold ? it.costOfGoodsSold / it.kg : p.buyPrice, returnId, it.fifoReturnedAllocations || [])];
+          it.fifoReturnedAllocations = [...(it.fifoReturnedAllocations || []), ...restoreFifoAllocations(p, it.fifoAllocations || [], q, it.costOfGoodsSold ? it.costOfGoodsSold / it.kg : p.buyPrice, returnId, it.fifoReturnedAllocations || [], inv.warehouseId || resolveProductWarehouseId(p))];
         } else {
-          consumeFifoStock(p, q);
+          consumeFifoStock(p, q, inv.warehouseId || resolveProductWarehouseId(p));
           p.stock -= q;
         }
         p.kardex.push({ date: getTodayJalaliDate(), doc: `برگشت جزئی فاکتور #${invId}`, inQty: inv.type === 'sale' ? q : 0, outQty: inv.type === 'sale' ? 0 : q, bal: p.stock, price: it.price });
@@ -5539,10 +5611,10 @@
             restoreFifoAllocations(
               simulated, entry.item.fifoAllocations || [], entry.quantity,
               entry.item.costOfGoodsSold ? entry.item.costOfGoodsSold / entry.item.kg : simulated.buyPrice,
-              'CANCEL-' + invId, entry.item.fifoReturnedAllocations || []
+              'CANCEL-' + invId, entry.item.fifoReturnedAllocations || [], inv.warehouseId || resolveProductWarehouseId(entry.product)
             );
           } else {
-            consumeFifoStock(simulated, entry.quantity);
+            consumeFifoStock(simulated, entry.quantity, inv.warehouseId || resolveProductWarehouseId(entry.product));
           }
         }
       } catch (error) {
@@ -5598,11 +5670,11 @@
             ...restoreFifoAllocations(
               product, item.fifoAllocations || [], quantity,
               item.costOfGoodsSold ? item.costOfGoodsSold / item.kg : product.buyPrice,
-              'CANCEL-' + invId, item.fifoReturnedAllocations || []
+              'CANCEL-' + invId, item.fifoReturnedAllocations || [], inv.warehouseId || resolveProductWarehouseId(product)
             )
           ];
         } else {
-          consumeFifoStock(product, quantity);
+          consumeFifoStock(product, quantity, inv.warehouseId || resolveProductWarehouseId(product));
           product.stock -= quantity;
         }
       }

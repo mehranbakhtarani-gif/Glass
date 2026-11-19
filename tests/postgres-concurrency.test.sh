@@ -73,15 +73,6 @@ fi
 
 replay="$(psql "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 \
   -v operation_id="$winner_op" -v actor="$winner_actor" -v device="$winner_device" \
-  -v marker="$winner_marker" -c "SELECT public.glass_apply_state_operation(
-    'glass_main_company_state', :'baseline'::timestamptz,
-    jsonb_build_object('vouchers','[]'::jsonb,'marker', :'marker'),
-    '[]'::jsonb, '{}'::jsonb, :'operation_id',
-    :'actor', :'device', 1, 'state_snapshot', :'marker', clock_timestamp()
-  );" 2>/dev/null || true)"
-# Idempotency lookup occurs before baseline comparison; use the original baseline value explicitly.
-replay="$(psql "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 \
-  -v operation_id="$winner_op" -v actor="$winner_actor" -v device="$winner_device" \
   -v marker="$winner_marker" -v expected="$baseline" -c "SELECT public.glass_apply_state_operation(
     'glass_main_company_state', :'expected'::timestamptz,
     jsonb_build_object('vouchers','[]'::jsonb,'marker', :'marker'),

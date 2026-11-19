@@ -28,14 +28,12 @@ baseline="$(psql "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT updated_a
 
 apply_operation() {
   local operation_id="$1" actor="$2" device="$3" marker="$4"
-  psql "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 \
-    -v expected="$baseline" -v operation_id="$operation_id" \
-    -v actor="$actor" -v device="$device" -v marker="$marker" \
-    -c "SELECT public.glass_apply_state_operation(
-      'glass_main_company_state', :'expected'::timestamptz,
-      jsonb_build_object('vouchers','[]'::jsonb,'marker', :'marker'),
-      '[]'::jsonb, '{}'::jsonb, :'operation_id',
-      :'actor', :'device', 1, 'state_snapshot', :'marker', clock_timestamp()
+  psql "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c "
+    SELECT public.glass_apply_state_operation(
+      'glass_main_company_state', '$baseline'::timestamptz,
+      jsonb_build_object('vouchers','[]'::jsonb,'marker','$marker'),
+      '[]'::jsonb, '{}'::jsonb, '$operation_id',
+      '$actor', '$device', 1, 'state_snapshot', '$marker', clock_timestamp()
     );"
 }
 
@@ -72,13 +70,12 @@ else
   winner_op="concurrent-ehsan-op"; winner_actor="ehsan"; winner_device="device-ehsan-1"; winner_marker="ehsan-write"
 fi
 
-replay="$(psql "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 \
-  -v operation_id="$winner_op" -v actor="$winner_actor" -v device="$winner_device" \
-  -v marker="$winner_marker" -v expected="$baseline" -c "SELECT public.glass_apply_state_operation(
-    'glass_main_company_state', :'expected'::timestamptz,
-    jsonb_build_object('vouchers','[]'::jsonb,'marker', :'marker'),
-    '[]'::jsonb, '{}'::jsonb, :'operation_id',
-    :'actor', :'device', 1, 'state_snapshot', :'marker', clock_timestamp()
+replay="$(psql "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c "
+  SELECT public.glass_apply_state_operation(
+    'glass_main_company_state', '$baseline'::timestamptz,
+    jsonb_build_object('vouchers','[]'::jsonb,'marker','$winner_marker'),
+    '[]'::jsonb, '{}'::jsonb, '$winner_op',
+    '$winner_actor', '$winner_device', 1, 'state_snapshot', '$winner_marker', clock_timestamp()
   );")"
 echo "Idempotent replay: $replay"
 grep -q '"status": "already_applied"' <<< "$replay"

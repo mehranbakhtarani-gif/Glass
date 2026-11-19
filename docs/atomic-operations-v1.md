@@ -50,7 +50,7 @@ Important limitation: this first RPC uses strict whole-snapshot compare-and-swap
 
 ## Security follow-up required
 
-- The security advisor flagged RLS disabled on the three tables inside the non-exposed `private` schema. Direct privilege checks confirmed anon and authenticated have no SELECT access to those tables, but RLS should be enabled as defense in depth. This is a pending hardening item.
+- RLS is enabled on all four Glass data tables (`public.glass_sync`, `private.glass_devices`, `private.glass_operations`, and `private.glass_operation_log`). Verification confirms anon and authenticated have no direct SELECT privileges. No client-facing policies are intentionally defined yet; the security advisor reports `rls_enabled_no_policy` informational findings. This is fail-closed until the authenticated Edge Function gateway is deployed.
 - No device tokens have been issued or stored. Until a pairing gateway validates revocable device credentials, no browser device should be allowed to call write RPCs.
 - The publishable key is public by design and is not a device credential. Never place a service-role or secret key in Glass frontend code.
 - The user's preference for no password screen can be preserved with device pairing, but the server must still authenticate each paired device.

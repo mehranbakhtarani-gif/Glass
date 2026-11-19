@@ -8240,6 +8240,9 @@
 
       const balances = new Map();
       const warnings = [];
+      const fiscalPeriods = ensureFiscalPeriods(fiscalYear);
+      const openPeriods = fiscalPeriods.filter(period => period.status !== 'closed');
+      if (openPeriods.length) warnings.push('برای بستن سال مالی، ابتدا همه ۱۲ دوره را ببندید؛ ' + openPeriods.length + ' دوره هنوز باز است.');
       (state.vouchers || []).forEach(voucher => {
         const rawDate = voucher.date || voucher.operationDate;
         const dateKey = normalizeLedgerDate(rawDate);

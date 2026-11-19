@@ -4209,8 +4209,16 @@
     function consumeFifoStock(product, quantity, warehouseId = product?.warehouseId) {
       const qty = Number(quantity || 0);
       if (!product || !Number.isFinite(qty) || qty <= 0) throw new Error('مقدار خروج موجودی معتبر نیست.');
-      const requestedWarehouseId = warehouseId === null || warehouseId === undefined ? '' : String(warehouseId);
       const productWarehouseId = product.warehouseId === null || product.warehouseId === undefined ? '' : String(product.warehouseId);
+      const knownBatchWarehouses = [...new Set((Array.isArray(product.batches) ? product.batches : [])
+        .map(batch => batch?.warehouseId).filter(value => value !== null && value !== undefined && value !== '').map(String))];
+      const inferredWarehouseId = productWarehouseId || (knownBatchWarehouses.length === 1 ? knownBatchWarehouses[0] : '');
+      const requestedWarehouseId = warehouseId === null || warehouseId === undefined
+        ? (inferredWarehouseId || ((state.warehouses || []).length === 1 ? String(state.warehouses[0].id) : ''))
+        : String(warehouseId);
+      if (!requestedWarehouseId && (state.warehouses || []).length > 1) {
+        throw new Error('انبار این کالا مشخص نیست؛ برای جلوگیری از خروج از انبار اشتباه، ابتدا انبار کالا را تعیین کنید.');
+      }
       if (requestedWarehouseId && productWarehouseId && requestedWarehouseId !== productWarehouseId) {
         throw new Error('انبار فاکتور با انبار اختصاص‌یافته به کالا یکسان نیست.');
       }
@@ -4258,8 +4266,16 @@
       const qty = Number(quantityToRestore), safeFallbackCost = Number(fallbackCost);
       if (!product || !Number.isFinite(qty) || qty <= 0) throw new Error('مقدار برگشتی برای بازیابی بچ معتبر نیست.');
       if (!Number.isFinite(safeFallbackCost) || safeFallbackCost < 0) throw new Error('بهای جایگزین بچ برگشتی معتبر نیست.');
-      const requestedWarehouseId = warehouseId === null || warehouseId === undefined ? '' : String(warehouseId);
       const productWarehouseId = product.warehouseId === null || product.warehouseId === undefined ? '' : String(product.warehouseId);
+      const knownBatchWarehouses = [...new Set((Array.isArray(product.batches) ? product.batches : [])
+        .map(batch => batch?.warehouseId).filter(value => value !== null && value !== undefined && value !== '').map(String))];
+      const inferredWarehouseId = productWarehouseId || (knownBatchWarehouses.length === 1 ? knownBatchWarehouses[0] : '');
+      const requestedWarehouseId = warehouseId === null || warehouseId === undefined
+        ? (inferredWarehouseId || ((state.warehouses || []).length === 1 ? String(state.warehouses[0].id) : ''))
+        : String(warehouseId);
+      if (!requestedWarehouseId && (state.warehouses || []).length > 1) {
+        throw new Error('انبار کالای برگشتی مشخص نیست؛ بازیابی بچ متوقف شد.');
+      }
       if (requestedWarehouseId && productWarehouseId && requestedWarehouseId !== productWarehouseId) {
         throw new Error('انبار برگشت با انبار اختصاص‌یافته به کالا یکسان نیست.');
       }
@@ -4614,6 +4630,17 @@
     }
 
     function submitPhysicalStocktaking() {
+      if (state.costingMethod === 'FIFO') {
+        const unresolvedWarehouseChange = state.products.some(product => {
+          const real = Number(document.getElementById(`st-real-${product.id}`)?.value);
+          return Number.isFinite(real) && Math.abs(real - Number(product.stock || 0)) > 0.000001 &&
+            !resolveProductWarehouseId(product);
+        });
+        if (unresolvedWarehouseChange) {
+          showToast('انبار یک یا چند کالا مشخص نیست؛ برای جلوگیری از اصلاح بچ در انبار اشتباه، ابتدا انبار کالاها را تعیین کنید.', 'error');
+          return;
+        }
+      }
       let changes = 0;
       state.products.forEach(p => {
         const real = Number(document.getElementById(`st-real-${p.id}`).value);

@@ -4010,11 +4010,18 @@
       if (stock > 0) newProd.batches.push({ id: 'OPEN-' + newProd.id, lot: newProd.lot || ('OPEN-' + newProd.id), receivedDate: '0000/00/00', productionDate: '', expiryDate: '', quantity: stock, remainingQty: stock, unitCost: buyPrice, sourceType: 'opening', sourceRef: newProd.id, warehouseId: newProd.warehouseId });
       const hasOpeningStockVoucher = stock > 0 && buyPrice > 0;
       if (hasOpeningStockVoucher) {
-        // postVoucher خودش saveState را اجرا می‌کند؛ ذخیره دوم باعث لاگ snapshot تکراری می‌شد.
-        postVoucher(`موجودی اولیه کالا: ${name}`, [
-          { code: '1105', partyId: null, desc: name, debit: stock * buyPrice, credit: 0 },
-          { code: '3101', partyId: null, desc: 'تعدیل سرمایه بابت موجودی اولیه', debit: 0, credit: stock * buyPrice }
-        ]);
+        // Keep the product and opening stock out of live state if the journal cannot be posted.
+        try {
+          const voucherId = postVoucher(`موجودی اولیه کالا: ${name}`, [
+            { code: '1105', partyId: null, desc: name, debit: stock * buyPrice, credit: 0 },
+            { code: '3101', partyId: null, desc: 'تعدیل سرمایه بابت موجودی اولیه', debit: 0, credit: stock * buyPrice }
+          ]);
+          if (voucherId === null || voucherId === undefined || voucherId === false) throw new Error('شماره سند معتبر برنگشت.');
+        } catch (error) {
+          state.products = state.products.filter(item => item !== newProd);
+          showToast('ثبت کالا ناموفق بود؛ کالا و موجودی اولیه به فهرست اضافه نشدند. ' + (error?.message || ''), 'error');
+          return;
+        }
       } else {
         saveState();
       }
@@ -4740,38 +4747,54 @@
     }
 
     function submitPhysicalStocktaking() {
-      if (state.costingMethod === 'FIFO') {
-        const unresolvedWarehouseChange = state.products.some(product => {
+      const date = getTodayJalaliDate();
+      const plans = [];
+      const voucherLines = [];
+      try {
+        for (const product of state.products) {
           const real = Number(document.getElementById(`st-real-${product.id}`)?.value);
-          return Number.isFinite(real) && Math.abs(real - Number(product.stock || 0)) > 0.000001 &&
-            !resolveProductWarehouseId(product);
-        });
-        if (unresolvedWarehouseChange) {
-          showToast('انبار یک یا چند کالا مشخص نیست؛ برای جلوگیری از اصلاح بچ در انبار اشتباه، ابتدا انبار کالاها را تعیین کنید.', 'error');
-          return;
+          if (!Number.isFinite(real) || real < 0) throw new Error('موجودی واقعی یکی از کالاها معتبر نیست.');
+          const current = Number(product.stock || 0);
+          if (Math.abs(real - current) <= 0.000001) continue;
+          const diff = real - current;
+          if (state.costingMethod === 'FIFO' && !resolveProductWarehouseId(product)) {
+            throw new Error('انبار کالای ' + product.name + ' مشخص نیست؛ اصلاح بچ در انبار نامشخص مجاز نیست.');
+          }
+          const simulated = JSON.parse(JSON.stringify(product));
+          if (diff > 0 && state.costingMethod === 'FIFO') {
+            addStockBatch(simulated, { lot: 'ADJ-' + Date.now() + '-' + product.id, quantity: diff, unitCost: product.buyPrice, receivedDate: date, sourceType: 'stocktake', sourceRef: product.id, warehouseId: resolveProductWarehouseId(product) });
+          }
+          if (diff < 0 && state.costingMethod === 'FIFO') consumeFifoStock(simulated, Math.abs(diff), resolveProductWarehouseId(product));
+          simulated.stock = real;
+          simulated.kardex = Array.isArray(simulated.kardex) ? simulated.kardex : [];
+          simulated.kardex.push({ date, doc: 'اصلاحیه انبارگردانی', inQty: diff > 0 ? diff : 0, outQty: diff < 0 ? Math.abs(diff) : 0, bal: real, price: product.buyPrice });
+          const value = Math.abs(diff) * Number(product.buyPrice || 0);
+          if (!Number.isFinite(value)) throw new Error('ارزش اصلاحیه انبارگردانی برای ' + product.name + ' معتبر نیست.');
+          if (value > 0) {
+            voucherLines.push(diff < 0
+              ? { code: '6104', partyId: null, desc: 'کسری انبارگردانی ' + product.name, debit: value, credit: 0 }
+              : { code: '1105', partyId: null, desc: 'اضافه انبارگردانی ' + product.name, debit: value, credit: 0 });
+            voucherLines.push(diff < 0
+              ? { code: '1105', partyId: null, desc: product.name, debit: 0, credit: value }
+              : { code: '3102', partyId: null, desc: product.name, debit: 0, credit: value });
+          }
+          plans.push({ product, simulated });
         }
+        if (voucherLines.length) {
+          const voucherId = postVoucher('سند تجمیعی مغایرت انبارگردانی ' + date, voucherLines, date,
+            { type: 'stocktake', id: createStableId('stocktake'), event: 'adjustment', deferSave: true });
+          if (voucherId === null || voucherId === undefined || voucherId === false) throw new Error('شماره سند انبارگردانی معتبر برنگشت.');
+        }
+      } catch (error) {
+        showToast('کنترل یا صدور سند انبارگردانی ناموفق بود؛ موجودی و بچ‌ها تغییر نکردند. ' + (error?.message || ''), 'error');
+        return;
       }
-      let changes = 0;
-      state.products.forEach(p => {
-        const real = Number(document.getElementById(`st-real-${p.id}`).value);
-        if (real !== p.stock) {
-          const diff = real - p.stock;
-          if (diff > 0 && state.costingMethod === 'FIFO') addStockBatch(p, { lot: 'ADJ-' + Date.now() + '-' + p.id, quantity: diff, unitCost: p.buyPrice, receivedDate: getTodayJalaliDate(), sourceType: 'stocktake', sourceRef: p.id, warehouseId: resolveProductWarehouseId(p) });
-          if (diff < 0 && state.costingMethod === 'FIFO') consumeFifoStock(p, Math.abs(diff), resolveProductWarehouseId(p));
-          p.stock = real;
-          changes++;
-          const val = Math.abs(diff) * p.buyPrice;
-          p.kardex.push({ date: getTodayJalaliDate(), doc: 'اصلاحیه انبارگردانی', inQty: diff > 0 ? diff : 0, outQty: diff < 0 ? Math.abs(diff) : 0, bal: real, price: p.buyPrice });
-          postVoucher(`سند مغایرت انبارگردانی: ${p.name}`, diff < 0
-            ? [{ code: '6104', partyId: null, desc: `کسری انبارگردانی ${p.name}`, debit: val, credit: 0 }, { code: '1105', partyId: null, desc: p.name, debit: 0, credit: val }]
-            : [{ code: '1105', partyId: null, desc: `اضافه انبارگردانی ${p.name}`, debit: val, credit: 0 }, { code: '3102', partyId: null, desc: p.name, debit: 0, credit: val }]
-          );
-        }
-      });
+      for (const plan of plans) {
+        Object.assign(plan.product, plan.simulated);
+      }
       saveState(); closeModal('modal-stock-adjust'); renderAll();
-      showToast(changes ? 'شمارش واقعی ثبت و سند مغایرت صادر شد ✔' : 'مغایرتی در موجودی مشاهده نشد.');
+      showToast(plans.length ? 'انبارگردانی ثبت شد؛ اصلاحیه‌های مالی در یک سند تجمیعی صادر شدند.' : 'مغایرتی در موجودی مشاهده نشد.');
     }
-
     // =========================================================================
     // 8. MODULE 4: CUSTOMERS & SUPPLIERS
     // =========================================================================
@@ -8405,14 +8428,19 @@
     function saveManualVoucher() {
       const desc = document.getElementById('mv-desc').value.trim();
       const amt = Number(document.getElementById('mv-amount').value || 0);
-      if (!desc || amt <= 0) { showToast('شرح و مبلغ را وارد کنید.', 'error'); return; }
+      if (!desc || !Number.isFinite(amt) || amt <= 0) { showToast('شرح و مبلغ معتبر را وارد کنید.', 'error'); return; }
       const operationDate = document.getElementById('mv-date').value.trim() || getTodayJalaliDate();
       if (jalaliDateOrdinal(operationDate) === null) { showToast('تاریخ سند باید به‌صورت شمسی معتبر مانند 1405/09/02 باشد.', 'error'); return; }
-      postVoucher(desc, [
-        { code: document.getElementById('mv-deb-acc').value, partyId: null, desc, debit: amt, credit: 0 },
-        { code: document.getElementById('mv-cred-acc').value, partyId: null, desc, debit: 0, credit: amt }
-      ], operationDate, { type: 'manual_voucher', id: createStableId('manual'), event: 'issued', mode: 'manual' });
-      renderAll(); setAccTab('journal'); showToast('سند دستی صادر شد ✔');
+      try {
+        const voucherId = postVoucher(desc, [
+          { code: document.getElementById('mv-deb-acc').value, partyId: null, desc, debit: amt, credit: 0 },
+          { code: document.getElementById('mv-cred-acc').value, partyId: null, desc, debit: 0, credit: amt }
+        ], operationDate, { type: 'manual_voucher', id: createStableId('manual'), event: 'issued', mode: 'manual' });
+        if (voucherId === null || voucherId === undefined || voucherId === false) throw new Error('شماره سند معتبر برنگشت.');
+        renderAll(); setAccTab('journal'); showToast('سند دستی صادر شد ✔');
+      } catch (error) {
+        showToast('صدور سند دستی انجام نشد؛ هیچ سندی ثبت نشد. ' + (error?.message || 'خطای نامشخص'), 'error');
+      }
     }
 
     function payrollPeriodOrdinal(period) {

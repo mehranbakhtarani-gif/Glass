@@ -1397,6 +1397,7 @@
               <button class="glass-flow-item" data-flow-nav="treasury"><span>💳</span><span>صندوق، بانک و چک</span></button>
               <button class="glass-flow-item" data-flow-nav="reconcile"><span>⚖️</span><span>مغایرت‌گیری بانک</span></button>
               <button class="glass-flow-item" data-flow-nav="cashflow"><span>📈</span><span>پیش‌بینی نقدینگی</span></button>
+              <button class="glass-flow-item" data-flow-nav="aging"><span>⏳</span><span>سن مطالبات و بدهی‌ها</span></button>
               <button class="glass-flow-item" data-flow-nav="accounting"><span>📚</span><span>ثبت و مرور اسناد</span></button>
             </div>
           </section>
@@ -8838,22 +8839,20 @@
         };
         handle?.addEventListener('pointerup', stopDrag);
         handle?.addEventListener('pointercancel', stopDrag);
+        let activeMod = 'dashboard';
         const syncActive = () => {
-          const active = window.currentMod || 'dashboard';
           dock.querySelectorAll('[data-flow-nav]').forEach((button) => {
-            button.classList.toggle('is-active', button.dataset.flowNav === active);
-            button.setAttribute('aria-current', button.dataset.flowNav === active ? 'page' : 'false');
+            const active = button.dataset.flowNav === activeMod;
+            button.classList.toggle('is-active', active);
+            button.setAttribute('aria-current', active ? 'page' : 'false');
           });
         };
         const originalNavigate = window.navigateTo;
         if (typeof originalNavigate === 'function' && !originalNavigate.__glassFlowWrapped) {
           const wrapped = function(mod) {
             const result = originalNavigate.apply(this, arguments);
-            dock.querySelectorAll('[data-flow-nav]').forEach((button) => {
-              const active = button.dataset.flowNav === mod;
-              button.classList.toggle('is-active', active);
-              button.setAttribute('aria-current', active ? 'page' : 'false');
-            });
+            activeMod = mod;
+            syncActive();
             return result;
           };
           wrapped.__glassFlowWrapped = true;

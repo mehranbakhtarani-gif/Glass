@@ -2026,7 +2026,14 @@
     let cloudConfig = (() => {
       try {
         const saved = JSON.parse(localStorage.getItem(CLOUD_CFG_KEY) || 'null');
-        if (saved && saved.url && saved.key) return saved;
+        if (saved && saved.url && saved.key) {
+          const savedUrl = String(saved.url).replace(/\/+$/, '');
+          const isHolooProject = savedUrl.includes('qsdlthvnfmjbodtdkbqc.supabase.co') ||
+            (saved.table === 'holoo_sync' && saved.recordId === 'main_company_state');
+          if (!isHolooProject) return saved;
+          // پاک‌سازی اتصال قدیمی که Glass را به فضای داده Holoo متصل می‌کرد.
+          try { localStorage.removeItem(CLOUD_CFG_KEY); } catch (e) {}
+        }
       } catch (e) {}
       return {
         url: '',

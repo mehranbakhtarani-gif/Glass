@@ -22,13 +22,13 @@ function extractFunction(name) {
     if (blockComment) { if (ch === '*' && next === '/') { blockComment = false; i++; } continue; }
     if (quote) {
       if (escaped) { escaped = false; continue; }
-      if (ch === '\\\\') { escaped = true; continue; }
+      if (ch === '\\') { escaped = true; continue; }
       if (ch === quote) quote = null;
       continue;
     }
     if (template) {
       if (escaped) { escaped = false; continue; }
-      if (ch === '\\\\') { escaped = true; continue; }
+      if (ch === '\\') { escaped = true; continue; }
       if (ch === '`') template = false;
       continue;
     }

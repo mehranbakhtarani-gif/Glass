@@ -3584,7 +3584,7 @@
         if (!code) throw new Error('ردیف سند فاقد کد حساب است.');
         const matchingAccounts = catalog.filter(item => String(item.code) === code);
         const account = matchingAccounts[0];
-        if (matchingAccounts.length !== 1 || !account || account.level !== 'subsidiary' || !/^\\d{4,8}$/.test(code)) {
+        if (matchingAccounts.length !== 1 || !account || account.level !== 'subsidiary' || !/^\d{4,8}$/.test(code)) {
           throw new Error('حساب ' + code + ' در کدینگ یکتا نیست یا سطح آن معینِ قابل ثبت نیست.');
         }
         if (account.active === false) throw new Error('حساب ' + code + ' غیرفعال است و امکان ثبت گردش ندارد.');
